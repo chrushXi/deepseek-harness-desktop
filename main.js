@@ -34,11 +34,17 @@ const isDev = !app.isPackaged;
 const RUNTIME_DIR = isDev
   ? path.join(__dirname, "runtime")
   : path.join(process.resourcesPath, "runtime");
+const INTERNAL_DIR = isDev
+  ? path.join(__dirname, "internal")
+  : path.join(process.resourcesPath, "internal");
 
 const NODE_EXE = path.join(RUNTIME_DIR, "node.exe");
 const DSH_BIN = path.join(RUNTIME_DIR, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
 const NPM_CLI = path.join(RUNTIME_DIR, "node_modules", "npm", "bin", "npm-cli.js");
 const DSH_PKG_JSON = path.join(RUNTIME_DIR, "node_modules", "@deepseek-ai", "dsh", "package.json");
+/** Desktop-bundled damage monitor layer; mounted automatically for every web boot. */
+const DAMAGE_PULSE_PATCH = path.join(INTERNAL_DIR, "damage-pulse", "cordis.patch.yml");
+const DAMAGE_PULSE_MODULE = path.join(INTERNAL_DIR, "damage-pulse");
 
 function logsDir() {
   const dir = path.join(app.getPath("userData"), "logs");
@@ -121,11 +127,34 @@ function probeHttp(port, pathname = "/") {
   });
 }
 
+/**
+ * DSH resolves profile loaders from its managed fallback directory. Keep the
+ * desktop-owned bundle there so the user never has to install a plugin.
+ */
+function syncBundledDamagePulse() {
+  const dshHome = process.env.DSH_HOME && process.env.DSH_HOME.trim() !== ""
+    ? path.resolve(process.env.DSH_HOME)
+    : path.join(os.homedir(), ".dsh");
+  const target = path.join(dshHome, "profiles", "node_modules", "dsh-damage-pulse");
+  if (!fs.existsSync(DAMAGE_PULSE_MODULE)) {
+    throw new Error(`内置 damage-pulse bundle 缺失：${DAMAGE_PULSE_MODULE}`);
+  }
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.cpSync(DAMAGE_PULSE_MODULE, target, { recursive: true, force: true });
+  log(`bundled damage-pulse synced to ${target}`);
+}
+
 /** 启动 dsh web 服务器；返回其监听端口。 */
 async function startServer(win) {
+  syncBundledDamagePulse();
   const logPath = SERVER_LOG();
-  log(`starting server: ${NODE_EXE} ${DSH_BIN} --profile web --port 0`);
-  const child = spawn(NODE_EXE, [DSH_BIN, "--profile", "web", "--port", "0"], {
+  log(`starting server: ${NODE_EXE} ${DSH_BIN} --profile web --patch ${DAMAGE_PULSE_PATCH} --port 0`);
+  const child = spawn(NODE_EXE, [
+    DSH_BIN,
+    "--profile", "web",
+    "--patch", DAMAGE_PULSE_PATCH,
+    "--port", "0",
+  ], {
     cwd: RUNTIME_DIR,
     env: { ...process.env, DSH_TELEMETRY_DISABLED: process.env.DSH_TELEMETRY_DISABLED || "" },
     windowsHide: true,

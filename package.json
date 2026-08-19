@@ -25,7 +25,8 @@
     },
     "files": [
       "main.js",
-      "preload.js"
+      "preload.js",
+      "assets/Boom.png"
     ],
     "extraResources": [
       {
@@ -34,6 +35,10 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "internal/damage-pulse",
+        "to": "internal/damage-pulse"
       }
     ],
     "win": {

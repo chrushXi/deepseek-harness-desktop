@@ -9,6 +9,7 @@ runtime/npx.cmd
 dist/
 *.log
 .smoke-*.txt
+.tmp-dsh-damage-pulse/
 
 # OS
 Thumbs.db
