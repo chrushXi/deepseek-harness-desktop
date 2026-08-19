@@ -592,6 +592,20 @@ window.__ModuleLoader__.load({
 		//#region packages/client/ui-token-monitor/src/client/index.ts
 		/** 依赖：slot 注册 + Conversation Node 事件装配。 */
 		const inject = ["slots", "conversationEvents"];
+		/**
+		* 当前会话上报组件（不可见）：把当前选中的会话 id 写入
+		* document.body.dataset.dshActiveSession，供桌面标题栏「打印小票」定位会话。
+		*/
+		const ActiveSessionReporter = (0, react.memo)(function ActiveSessionReporter({ sessionId }) {
+			(0, react.useEffect)(() => {
+				const id = sessionId === void 0 || sessionId === null ? "" : String(sessionId);
+				if (id !== "") document.body.dataset.dshActiveSession = id;
+				return () => {
+					if (id !== "" && document.body.dataset.dshActiveSession === id) delete document.body.dataset.dshActiveSession;
+				};
+			}, [sessionId]);
+			return null;
+		});
 		function apply(ctx) {
 			ctx.conversationEvents.register(tokenUsageNodeDefinition);
 			ctx.slots.inject("conversation.chat.node", () => ctx.slots.register({
@@ -603,12 +617,18 @@ window.__ModuleLoader__.load({
 				id: "token-monitor-stats",
 				order: 0
 			}, SessionStatsBar));
+			ctx.slots.inject("conversation.composer.dock", () => ctx.slots.register({
+				name: "conversation.composer.dock",
+				id: "token-monitor-active-session",
+				order: 1e4
+			}, ActiveSessionReporter));
 			ctx.slots.inject("shell.overlay", () => ctx.slots.register({
 				name: "shell.overlay",
 				id: "token-monitor-balance"
 			}, BalanceWidget));
 		}
 		//#endregion
+		exports.ActiveSessionReporter = ActiveSessionReporter;
 		exports.BalanceWidget = BalanceWidget;
 		exports.SessionStatsBar = SessionStatsBar;
 		exports.UsageNodeView = UsageNodeView;

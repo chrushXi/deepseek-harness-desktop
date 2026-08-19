@@ -2,9 +2,41 @@ import z from "@deepseek-ai/schemastery";
 import { settingsNamespace } from "@deepseek-ai/dsh-settings";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { z as z$1 } from "zod";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+/** 最近一次产生活动的会话 id：小票默认对该会话出票（可被 ?sessionId= 覆盖）。 */
+let lastActiveSessionId = null;
+/**
+* 官方余额锚点：官方余额值最近一次发生变化的时刻。
+* 官方余额（DeepSeek /user/balance）约 5 分钟才反映一次扣费，本地把
+* 锚点之后发生的扣费（持久化在 usage.jsonl）实时补扣，重启后也能恢复；
+* 官方值一旦变化（扣费落账或充值），锚点前移，不再重复扣减。
+*/
+let lastOfficialChangeTs = null;
+const BALANCE_ANCHOR_FILE = () => join(DATA_DIR, "balance-anchor.json");
+function loadBalanceAnchor() {
+	try {
+		const parsed = JSON.parse(readFileSync(BALANCE_ANCHOR_FILE(), "utf8"));
+		if (typeof parsed.lastOfficialChangeTs === "number" && Number.isFinite(parsed.lastOfficialChangeTs)) return parsed.lastOfficialChangeTs;
+	} catch { /* 首次运行/文件缺失 */ }
+	return null;
+}
+function saveBalanceAnchor() {
+	try {
+		mkdirSync(DATA_DIR, { recursive: true });
+		writeFileSync(BALANCE_ANCHOR_FILE(), `${JSON.stringify({ lastOfficialChangeTs }, null, 2)}\n`, "utf8");
+	} catch { /* 落盘失败不影响内存计算 */ }
+}
+/** 官方尚未反映的本地扣费合计：锚点之后的全部用量明细金额。 */
+function pendingDeduction(storage) {
+	if (lastOfficialChangeTs === null) return 0;
+	let cost = 0;
+	for (const record of storage.history()) {
+		if (Number.isFinite(record.timestamp) && record.timestamp > lastOfficialChangeTs) cost += record.cost ?? 0;
+	}
+	return cost;
+}
 //#region plugins/dsh-token-monitor/src/pricing.ts
 /** 2026-08-17 起生效的峰谷价格（单位：元 / 百万 tokens）。 */
 const PRICE_TABLE = {
@@ -37,6 +69,51 @@ const PRICE_TABLE = {
 		}
 	}
 };
+function cloneJson(value) {
+	return JSON.parse(JSON.stringify(value));
+}
+function mergeRate(defaultRate, candidateRate) {
+	const next = { ...defaultRate };
+	for (const key of ["input", "cacheHit", "output"]) {
+		const value = Number(candidateRate?.[key]);
+		if (Number.isFinite(value) && value >= 0) next[key] = value;
+	}
+	return next;
+}
+function normalizePriceTable(candidate) {
+	const base = cloneJson(PRICE_TABLE);
+	const source = candidate && typeof candidate === "object" ? candidate : {};
+	base.version = typeof source.version === "string" && source.version.trim() !== "" ? source.version.trim() : PRICE_TABLE.version;
+	if (Array.isArray(source.peakHours)) {
+		const peakHours = source.peakHours.filter((item) => Array.isArray(item) && item.length === 2 && Number.isFinite(Number(item[0])) && Number.isFinite(Number(item[1]))).map(([start, end]) => [Number(start), Number(end)]);
+		if (peakHours.length > 0) base.peakHours = peakHours;
+	}
+	for (const model of Object.keys(PRICE_TABLE.models)) {
+		const candidateModel = source.models?.[model];
+		base.models[model] = {
+			offPeak: mergeRate(PRICE_TABLE.models[model].offPeak, candidateModel?.offPeak),
+			peak: mergeRate(PRICE_TABLE.models[model].peak, candidateModel?.peak)
+		};
+	}
+	return base;
+}
+function replacePriceTable(target, source) {
+	const normalized = normalizePriceTable(source);
+	for (const key of Object.keys(target)) delete target[key];
+	Object.assign(target, normalized);
+	return target;
+}
+function loadSavedPriceTable() {
+	try {
+		return normalizePriceTable(JSON.parse(readFileSync(join(DATA_DIR, "price-table.json"), "utf8")));
+	} catch {
+		return void 0;
+	}
+}
+function savePriceTable(table) {
+	mkdirSync(DATA_DIR, { recursive: true });
+	writeFileSync(join(DATA_DIR, "price-table.json"), `${JSON.stringify(normalizePriceTable(table), null, 2)}\n`, "utf8");
+}
 /**
 * 2026-08-17 00:00（北京时间）前的旧价格：统一价，无峰谷。
 * 峰值/谷值填同一组价格 + 空 peakHours，使 `isPeakHour` 恒为假、始终按 offPeak 计价。
@@ -192,6 +269,7 @@ function buildRecord(sessionId, turn, step, timestamp, provider, model, usage, p
 /** 挂载采集器：监听 session/event，累计每次模型调用的 token 与金额。 */
 function attachCollector(ctx, storage, priceTable) {
 	ctx.on("session/event", (session, event) => {
+		lastActiveSessionId = session.id;
 		if (event.type !== "assistant/message") return;
 		const usage = event.data.usage;
 		if (usage === void 0) return;
@@ -305,6 +383,13 @@ var BalanceService = class {
 		}
 		try {
 			const next = await fetchBalance(apiKey);
+			const prev = this.latest?.totalBalance;
+			// 官方余额值发生变化：说明其已反映此前的扣费（或发生充值），
+			// 重置本地待扣锚点 —— 新值之后的扣费才需要本地补扣。
+			if (prev !== void 0 && Math.abs(next.totalBalance - prev) > 1e-9) {
+				lastOfficialChangeTs = Date.now();
+				saveBalanceAnchor();
+			}
 			this.latest = next;
 			if (this.lastLoggedTotal !== next.totalBalance) {
 				this.lastLoggedTotal = next.totalBalance;
@@ -334,7 +419,8 @@ var BalanceService = class {
 };
 /** 挂载余额服务：启动轮询，fiber dispose 时清理定时器。 */
 function attachBalance(ctx) {
-	const service = new BalanceService(ctx);
+	// 轮询间隔 15s：充值/扣费后余额刷新更快（原 60s 太久）
+	const service = new BalanceService(ctx, 15e3);
 	ctx.effect(() => {
 		service.start();
 		return () => service.stop();
@@ -342,7 +428,7 @@ function attachBalance(ctx) {
 	return service;
 }
 /** 注册余额 HTTP 端点（仅 web 装配有 webServer 服务）：Client 余额卡片定时拉取。 */
-function registerBalanceRoute(ctx, service) {
+function registerBalanceRoute(ctx, service, storage) {
 	ctx.webServer.register({
 		kind: "exact",
 		path: "/api/token-monitor/balance",
@@ -352,7 +438,8 @@ function registerBalanceRoute(ctx, service) {
 				"Content-Type": "application/json",
 				"Cache-Control": "no-store"
 			});
-			res.end(JSON.stringify(balance ?? null));
+			// pendingCost：官方尚未反映的本地扣费，展示余额 = totalBalance - pendingCost
+			res.end(JSON.stringify(balance ? { ...balance, pendingCost: pendingDeduction(storage) } : null));
 		}
 	});
 }
@@ -529,17 +616,136 @@ async function migrateMissingTokenCost(ctx) {
 		console.warn(`[dsh-damage-pulse] 历史会话投影迁移失败: ${String(error)}`);
 	}
 }
+function readRequestJson(req) {
+	return new Promise((resolve, reject) => {
+		let body = "";
+		req.on("data", (chunk) => {
+			body += chunk.toString();
+			if (body.length > 1e6) {
+				reject(new Error("request body too large"));
+				req.destroy();
+			}
+		});
+		req.on("end", () => {
+			try {
+				resolve(body.trim() === "" ? {} : JSON.parse(body));
+			} catch (error) {
+				reject(error);
+			}
+		});
+		req.on("error", reject);
+	});
+}
+function sendJson(res, statusCode, payload) {
+	res.writeHead(statusCode, {
+		"Content-Type": "application/json",
+		"Cache-Control": "no-store"
+	});
+	res.end(JSON.stringify(payload));
+}
+/** 从某会话的用量明细聚合出小票数据：按模型分组 + 合计。 */
+function buildSessionReceipt(sessionId, records, createdAt, llmMs) {
+	const byModel = /* @__PURE__ */ new Map();
+	let firstTs = Infinity;
+	let lastTs = -Infinity;
+	for (const record of records) {
+		const model = typeof record.model === "string" && record.model !== "" ? record.model : "unknown";
+		let agg = byModel.get(model);
+		if (agg === void 0) {
+			agg = {
+				model,
+				calls: 0,
+				inputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 0,
+				outputTokens: 0,
+				reasoningTokens: 0,
+				cost: 0,
+				cacheHitCost: 0,
+				peakCost: 0,
+				lastTs: 0
+			};
+			byModel.set(model, agg);
+		}
+		agg.calls += 1;
+		agg.inputTokens += record.inputTokens ?? 0;
+		agg.cacheReadTokens += record.cacheReadTokens ?? 0;
+		agg.cacheWriteTokens += record.cacheWriteTokens ?? 0;
+		agg.outputTokens += record.outputTokens ?? 0;
+		agg.reasoningTokens += record.reasoningTokens ?? 0;
+		agg.cost += record.cost ?? 0;
+		agg.cacheHitCost += record.costCacheRead ?? 0;
+		if (record.peak) agg.peakCost += record.cost ?? 0;
+		if (record.timestamp < firstTs) firstTs = record.timestamp;
+		if (record.timestamp > lastTs) lastTs = record.timestamp;
+		if (record.timestamp > agg.lastTs) agg.lastTs = record.timestamp;
+	}
+	// 最近使用的模型排最前，其余按最近活动倒序
+	const models = [...byModel.values()].sort((left, right) => {
+		if (left.lastTs !== right.lastTs) return right.lastTs - left.lastTs;
+		return right.calls - left.calls;
+	});
+	let calls = 0;
+	let tokens = 0;
+	let cost = 0;
+	let peakCost = 0;
+	let inputTokens = 0;
+	let cacheWriteTokens = 0;
+	let cacheReadTokens = 0;
+	let cacheHitCost = 0;
+	for (const model of models) {
+		calls += model.calls;
+		tokens += model.inputTokens + model.cacheReadTokens + model.cacheWriteTokens + model.outputTokens + model.reasoningTokens;
+		cost += model.cost;
+		peakCost += model.peakCost;
+		inputTokens += model.inputTokens;
+		cacheWriteTokens += model.cacheWriteTokens;
+		cacheReadTokens += model.cacheReadTokens;
+		cacheHitCost += model.cacheHitCost;
+	}
+	// 缓存命中率：命中 Token /（命中 + 未命中输入，缓存写入按未命中计）
+	const cacheMissTokens = inputTokens + cacheWriteTokens;
+	const cacheHitRate = cacheReadTokens + cacheMissTokens > 0
+		? cacheReadTokens / (cacheReadTokens + cacheMissTokens) * 100
+		: 0;
+	const spanMs = Number.isFinite(firstTs) && Number.isFinite(lastTs)
+		? Math.max(0, lastTs - (createdAt ?? firstTs))
+		: null;
+	return {
+		sessionId,
+		issuedAt: Date.now(),
+		createdAt,
+		spanMs,
+		llmMs: Number.isFinite(llmMs) && llmMs >= 0 ? llmMs : null,
+		models,
+		totals: {
+			calls,
+			tokens,
+			cost,
+			peakCost,
+			cacheHitRate,
+			cacheHitCost
+		}
+	};
+}
 function apply(ctx) {
 	console.log("[dsh-damage-pulse] plugin loaded");
-	let priceTable = PRICE_TABLE;
+	const priceTable = cloneJson(PRICE_TABLE);
 	ctx.inject(["settings"], (settingsCtx) => {
 		const section = settingsCtx.settings.register(SETTINGS_NS, settingsSchema).get();
 		if (section?.priceTable !== void 0) {
-			priceTable = section.priceTable;
+			replacePriceTable(priceTable, section.priceTable);
 			console.log(`[dsh-damage-pulse] 使用 settings 价格表 v${priceTable.version}`);
 		}
 	});
+	const savedPriceTable = loadSavedPriceTable();
+	if (savedPriceTable !== void 0) {
+		replacePriceTable(priceTable, savedPriceTable);
+		console.log(`[dsh-damage-pulse] 使用本地价格表 v${priceTable.version}`);
+	}
 	const storage = new UsageStorage();
+	// 余额锚点：优先恢复持久化的官方变动时刻；首次运行取当前时间（旧记录视为已反映）
+	lastOfficialChangeTs = loadBalanceAnchor() ?? Date.now();
 	attachCollector(ctx, storage, priceTable);
 	const balance = attachBalance(ctx);
 	ctx.inject(["sessionProjections"], (projectionCtx) => {
@@ -554,7 +760,7 @@ function apply(ctx) {
 		await migrateMissingTokenCost(migrateCtx);
 	});
 	ctx.inject(["webServer"], (webCtx) => {
-		registerBalanceRoute(webCtx, balance);
+		registerBalanceRoute(webCtx, balance, storage);
 		console.log("[dsh-damage-pulse] balance route registered");
 		webCtx.webServer.register({
 			kind: "exact",
@@ -572,6 +778,29 @@ function apply(ctx) {
 		console.log("[dsh-damage-pulse] usage route registered");
 		webCtx.webServer.register({
 			kind: "exact",
+			path: "/api/token-monitor/pricing",
+			handler: (req, res) => {
+				if (req.method === "GET" || req.method === void 0) {
+					sendJson(res, 200, priceTable);
+					return;
+				}
+				if (req.method !== "POST") {
+					sendJson(res, 405, { error: "method not allowed" });
+					return;
+				}
+				void readRequestJson(req).then((body) => {
+					replacePriceTable(priceTable, body);
+					savePriceTable(priceTable);
+					sendJson(res, 200, priceTable);
+					console.log(`[dsh-damage-pulse] 价格表已更新 v${priceTable.version}`);
+				}).catch((error) => {
+					sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+				});
+			}
+		});
+		console.log("[dsh-damage-pulse] pricing route registered");
+		webCtx.webServer.register({
+			kind: "exact",
 			path: "/api/token-monitor/charge-events",
 			handler: (req, res) => {
 				const url = new URL(req.url ?? "/", "http://localhost");
@@ -587,6 +816,62 @@ function apply(ctx) {
 			}
 		});
 		console.log("[dsh-damage-pulse] charge-events route registered");
+	});
+	ctx.inject(["webServer", "sessionPersistence", "sessionProjectionCache"], async (receiptCtx) => {
+		receiptCtx.webServer.register({
+			kind: "exact",
+			path: "/api/token-monitor/receipt",
+			handler: async (req, res) => {
+				try {
+					const url = new URL(req.url ?? "/", "http://localhost");
+					const requested = url.searchParams.get("sessionId") ?? void 0;
+					// 会话解析：显式 id → 本次启动期间活跃会话 → 全量明细中最近活跃的会话（含历史）→ 最近创建的会话
+					let sessionId = requested ?? lastActiveSessionId;
+					if (sessionId === void 0 || sessionId === null || sessionId === "") {
+						sessionId = null;
+						let bestTs = -1;
+						for (const record of storage.history()) {
+							if (typeof record.sessionId === "string" && Number.isFinite(record.timestamp) && record.timestamp > bestTs) {
+								bestTs = record.timestamp;
+								sessionId = record.sessionId;
+							}
+						}
+					}
+					if (sessionId === null) {
+						try {
+							const headers = await receiptCtx.sessionPersistence.list();
+							let bestHeader = null;
+							for (const header of headers) {
+								if (bestHeader === null || (header?.createdAt ?? 0) > (bestHeader?.createdAt ?? 0)) bestHeader = header;
+							}
+							sessionId = bestHeader?.id ?? null;
+						} catch { /* 元数据缺失继续 */ }
+					}
+					if (sessionId === null) {
+						sendJson(res, 404, { error: "no active session" });
+						return;
+					}
+					const records = storage.history(sessionId);
+					let createdAt = null;
+					let llmMs = null;
+					try {
+						const headers = await receiptCtx.sessionPersistence.list();
+						for (const header of headers) {
+							if (header?.id !== sessionId) continue;
+							if (typeof header.createdAt === "number") createdAt = header.createdAt;
+							const snapshot = receiptCtx.sessionProjectionCache.cachedSnapshot(header);
+							const stats = snapshot?.values?.sessionStats;
+							if (stats && typeof stats.llmMs === "number") llmMs = stats.llmMs;
+							break;
+						}
+					} catch { /* 元数据缺失不影响出票 */ }
+					sendJson(res, 200, buildSessionReceipt(sessionId, records, createdAt, llmMs));
+				} catch (error) {
+					sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+				}
+			}
+		});
+		console.log("[dsh-damage-pulse] receipt route registered");
 	});
 }
 //#endregion
