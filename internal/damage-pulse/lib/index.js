@@ -297,9 +297,9 @@ function attachCollector(ctx, storage, priceTable) {
 }
 //#endregion
 //#region plugins/dsh-token-monitor/src/balance-selection.ts
-function parseAmount(value, field) {
+function parseAmount(value, field, allowNegative = false) {
 	const amount = Number(value);
-	if (!Number.isFinite(amount) || amount < 0) throw new Error(`balance response has invalid ${field}`);
+	if (!Number.isFinite(amount) || (!allowNegative && amount < 0)) throw new Error(`balance response has invalid ${field}`);
 	return amount;
 }
 function parseEntry(info) {
@@ -307,7 +307,8 @@ function parseEntry(info) {
 	if (currency === void 0 || currency.length === 0) throw new Error("balance response has invalid currency");
 	return {
 		currency,
-		totalBalance: parseAmount(info.total_balance, "total_balance"),
+		// 官方余额可能因账单结算短暂为负；这属于有效余额，必须继续传给标题栏显示。
+		totalBalance: parseAmount(info.total_balance, "total_balance", true),
 		grantedBalance: parseAmount(info.granted_balance, "granted_balance"),
 		toppedUpBalance: parseAmount(info.topped_up_balance, "topped_up_balance")
 	};

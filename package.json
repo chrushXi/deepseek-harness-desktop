@@ -1,10 +1,10 @@
 {
   "name": "deepseek-harness-desktop",
   "productName": "DeepSeek Harness",
-  "version": "1.1.0",
+  "version": "0.2.1",
   "description": "DeepSeek Harness 桌面版",
   "main": "main.js",
-  "author": "DeepSeek Harness",
+  "author": "MaoBai c.d",
   "license": "MIT",
   "private": true,
   "scripts": {
@@ -26,16 +26,11 @@
     "files": [
       "main.js",
       "preload.js",
-      "assets/Boom.png"
+      "assets/Boom.png",
+      "assets/splash.html",
+      "assets/harness-web/**/*"
     ],
     "extraResources": [
-      {
-        "from": "runtime",
-        "to": "runtime",
-        "filter": [
-          "**/*"
-        ]
-      },
       {
         "from": "internal/damage-pulse",
         "to": "internal/damage-pulse"

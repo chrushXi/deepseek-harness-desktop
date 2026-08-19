@@ -323,7 +323,7 @@ function injectTitlebar() {
   bar.id = "dsh-titlebar";
   bar.innerHTML = `
     <div class="dsh-tb-brand">
-      <svg class="dsh-tb-mark" width="16" height="16" viewBox="0 0 24 24" fill="#4D6BFE" fill-rule="evenodd" aria-hidden="true"><path d="${OFFICIAL_MARK_PATH}"/></svg>
+      <svg class="dsh-tb-mark" width="16" height="16" viewBox="0 0 24 24" fill="#000000" fill-rule="evenodd" aria-hidden="true"><path d="${OFFICIAL_MARK_PATH}"/></svg>
       <span>DeepSeek Harness</span>
     </div>
     <div class="dsh-tb-spacer"></div>
@@ -437,6 +437,11 @@ function injectTitlebar() {
   const updateAvail = updateBtn.querySelector(".dsh-tb-update-avail");
   const progress = $("dsh-tb-progress");
   updateBtn.addEventListener("click", () => api.checkUpdate(false));
+  api.getVersion().then((info) => {
+    if (info && info.mode === "native") {
+      updateBtn.hidden = true;
+    }
+  }).catch(() => {});
 
   // 内置 damage-pulse 标题栏读数。标题栏是唯一可见承载，右键余额打开详情面板。
   const balance = $("dsh-tb-balance");
@@ -1359,13 +1364,1241 @@ function openReceipt() {
     });
 }
 
+// ---------- 启动画面（Boot Splash） ----------
+
+const SPLASH_LOGO_SVG = `<svg width="182" height="29" viewBox="0 0 182 29" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M100.136 23.7767H98.1371V20.6775H100.136C101.374 20.6775 102.625 20.3688 103.431 19.5112C104.237 18.6535 104.542 17.3378 104.542 16.0229C104.542 14.708 104.25 13.3923 103.431 12.5354C102.613 11.6777 101.374 11.3691 100.136 11.3691C98.8981 11.3691 97.6471 11.6777 96.84 12.5354C96.0335 13.393 95.7291 14.708 95.7291 16.0229V28.7513H92.2224V8.28192H95.7291V9.58548H96.372C96.4417 9.50512 96.5114 9.43685 96.5818 9.36858C97.4594 8.56781 98.8028 8.28192 100.123 8.28192C102.193 8.28192 104.261 8.7968 105.617 10.2262C106.973 11.6557 107.452 13.851 107.452 16.0357C107.452 18.2204 106.961 20.4044 105.617 21.8452C104.273 23.286 102.193 23.7781 100.136 23.7781V23.7767Z" fill="currentColor"></path><path d="M46.7705 8.83322H48.7689V11.9325H46.7705C45.5317 11.9325 44.2815 12.2411 43.475 13.0988C42.6685 13.9564 42.3649 15.2721 42.3649 16.587C42.3649 17.9019 42.6572 19.2169 43.475 20.0745C44.2928 20.9322 45.5317 21.2408 46.7705 21.2408C48.0094 21.2408 49.2603 20.9322 50.0668 20.0745C50.8732 19.2169 51.1769 17.9019 51.1769 16.587V3.84727H54.6829V24.3287H51.1769V23.0252H50.534C50.4636 23.1048 50.3939 23.1738 50.3235 23.2421C49.4466 24.0421 48.1025 24.3287 46.7819 24.3287C44.7131 24.3287 42.6444 23.8145 41.2889 22.3851C39.9334 20.9557 39.4541 18.7596 39.4541 16.5756C39.4541 14.3917 39.9448 12.207 41.2889 10.7662C42.6444 9.33672 44.7131 8.83322 46.7705 8.83322Z" fill="currentColor"></path><path d="M72.2712 16.3098V17.5565H62.9329V15.0753H69.1271C68.987 14.1721 68.6599 13.3258 68.0753 12.7078C67.234 11.816 65.9362 11.496 64.6511 11.496C63.366 11.496 62.0682 11.816 61.2269 12.7078C60.3856 13.5996 60.0812 14.9608 60.0812 16.3106C60.0812 17.6603 60.3848 19.0322 61.2269 19.9126C62.0682 20.793 63.3653 21.1251 64.6511 21.1251C65.9369 21.1251 67.234 20.8051 68.0753 19.9126C68.192 19.7867 68.2972 19.6495 68.4025 19.5122H71.8623C71.5586 20.5875 71.0793 21.5596 70.3546 22.3142C68.9522 23.7891 66.7903 24.3268 64.6511 24.3268C62.5119 24.3268 60.35 23.8005 58.9476 22.3142C57.5452 20.8279 57.031 18.5635 57.031 16.3106C57.031 14.0576 57.5338 11.7819 58.9476 10.3069C60.3621 8.83199 62.5119 8.29435 64.6511 8.29435C66.7903 8.29435 68.9522 8.82061 70.3546 10.3069C71.7684 11.7933 72.2712 14.0576 72.2712 16.3106V16.3098Z" fill="currentColor"></path><path d="M89.8732 16.3098V17.5565H80.535V15.0753H86.7292C86.5884 14.1721 86.262 13.3258 85.6774 12.7078C84.8361 11.816 83.5382 11.496 82.2532 11.496C80.9681 11.496 79.6702 11.816 78.8289 12.7078C77.9876 13.5996 77.6832 14.9608 77.6832 16.3106C77.6832 17.6603 77.9869 19.0322 78.8289 19.9126C79.6702 20.793 80.9681 21.1251 82.2532 21.1251C83.5382 21.1251 84.8361 20.8051 85.6774 19.9126C85.7947 19.7867 85.8993 19.6495 86.0038 19.5122H89.4643C89.16 20.5875 88.6806 21.5596 87.956 22.3142C86.5535 23.7891 84.3916 24.3268 82.2532 24.3268C80.1147 24.3268 77.9521 23.8005 76.5496 22.3142C75.1472 20.8279 74.6331 18.5635 74.6331 16.3106C74.6331 14.0576 75.1359 11.7819 76.5496 10.3069C77.9641 8.83199 80.114 8.29435 82.2532 8.29435C84.3923 8.29435 86.5535 8.82061 87.956 10.3069C89.3705 11.7933 89.8732 14.0576 89.8732 16.3106V16.3098Z" fill="currentColor"></path><path d="M117.446 24.3282C119.585 24.3282 121.746 24.0195 123.148 23.1391C124.551 22.2587 125.066 20.9203 125.066 19.594C125.066 18.2677 124.562 16.9179 123.148 16.0489C121.746 15.1798 119.584 14.8591 117.446 14.8591C116.533 14.8591 115.692 14.7332 115.096 14.4018C114.5 14.0583 114.278 13.5441 114.278 13.0293C114.278 12.5144 114.489 11.9888 115.096 11.6567C115.692 11.3132 116.616 11.1994 117.527 11.1994C118.438 11.1994 119.362 11.3253 119.959 11.6567C120.555 12.0002 120.777 12.5144 120.777 13.0293H124.341C124.341 11.7022 123.886 10.3532 122.612 9.48412C121.339 8.61508 119.386 8.29435 117.446 8.29435C115.506 8.29435 113.555 8.60299 112.28 9.48412C111.007 10.3645 110.55 11.7022 110.55 13.0293C110.55 14.3563 111.006 15.7054 112.28 16.5744C113.554 17.4434 115.506 17.7642 117.446 17.7642C118.451 17.7642 119.562 17.89 120.228 18.2214C120.895 18.5536 121.128 19.0791 121.128 19.594C121.128 20.1089 120.895 20.6344 120.228 20.9665C119.562 21.2979 118.545 21.4238 117.54 21.4238C116.535 21.4238 115.506 21.2979 114.851 20.9665C114.197 20.6351 113.951 20.1089 113.951 19.594H109.837C109.837 20.921 110.339 22.2701 111.754 23.1391C113.168 24.0082 115.307 24.3282 117.446 24.3282H117.446Z" fill="currentColor"></path><path d="M142.666 16.3098V17.5565H133.327V15.0753H139.522C139.382 14.1721 139.054 13.3258 138.471 12.7078C137.628 11.816 136.331 11.496 135.045 11.496C133.758 11.496 132.462 11.816 131.621 12.7078C130.779 13.5996 130.476 14.9608 130.476 16.3106C130.476 17.6603 130.779 19.0322 131.621 19.9126C132.462 20.793 133.76 21.1251 135.045 21.1251C136.33 21.1251 137.628 20.8051 138.471 19.9126C138.587 19.7867 138.692 19.6495 138.797 19.5122H142.256C141.952 20.5875 141.473 21.5596 140.749 22.3142C139.347 23.7891 137.184 24.3268 135.045 24.3268C132.906 24.3268 130.745 23.8005 129.342 22.3142C127.94 20.8279 127.426 18.5635 127.426 16.3106C127.426 14.0576 127.928 11.7819 129.342 10.3069C130.757 8.83199 132.907 8.29435 135.045 8.29435C137.183 8.29435 139.347 8.82061 140.749 10.3069C142.163 11.7933 142.665 14.0576 142.665 16.3106L142.666 16.3098Z" fill="currentColor"></path><path d="M160.266 16.3098V17.5565H150.928V15.0753H157.122C156.983 14.1721 156.655 13.3258 156.07 12.7078C155.229 11.816 153.932 11.496 152.646 11.496C151.359 11.496 150.063 11.816 149.222 12.7078C148.38 13.5996 148.076 14.9608 148.076 16.3106C148.076 17.6603 148.38 19.0322 149.222 19.9126C150.063 20.793 151.361 21.1251 152.646 21.1251C153.931 21.1251 155.229 20.8051 156.07 19.9126C156.188 19.7867 156.292 19.6495 156.398 19.5122H159.857C159.553 20.5875 159.074 21.5596 158.35 22.3142C156.947 23.7891 154.785 24.3268 152.646 24.3268C150.507 24.3268 148.346 23.8005 146.943 22.3142C145.541 20.8279 145.026 18.5635 145.026 16.3106C145.026 14.0576 145.528 11.7819 146.943 10.3069C148.357 8.83199 150.508 8.29435 152.646 8.29435C154.784 8.29435 156.946 8.82061 158.35 10.3069C159.764 11.7933 160.266 14.0576 160.266 16.3106V16.3098Z" fill="currentColor"></path><path d="M166.121 3.84727H162.615V24.3287H166.121V3.84727Z" fill="currentColor"></path><path d="M172.106 15.83L177.855 24.3269H173.519L167.768 15.83L173.519 9.00281H177.855L172.106 15.83Z" fill="currentColor"></path><g clip-path="url(#clip0_10227_148760)"><path d="M33.7472 4.32057C33.3878 4.14492 33.2334 4.48011 33.0234 4.64989C32.9516 4.70478 32.8909 4.7765 32.8302 4.84237C32.3054 5.40296 31.6921 5.77107 30.8915 5.72716C29.7206 5.6613 28.7209 6.02941 27.8368 6.92518C27.6487 5.82084 27.0245 5.16145 26.0745 4.73845C25.5776 4.51889 25.0748 4.29861 24.7265 3.82072C24.4835 3.48041 24.4169 3.10132 24.2954 2.72735C24.2179 2.50194 24.141 2.27141 23.8812 2.23263C23.5995 2.18872 23.489 2.4251 23.3784 2.6227C22.9364 3.43065 22.7652 4.32057 22.782 5.22219C22.8208 7.25012 23.677 8.86529 25.3786 10.0143C25.5718 10.146 25.6215 10.2777 25.5608 10.4702C25.4444 10.8661 25.3068 11.2504 25.1854 11.6463C25.1078 11.8988 24.9921 11.9544 24.7214 11.8439C23.7875 11.4538 22.9811 10.8764 22.2682 10.1789C21.0585 9.00873 19.9644 7.71704 18.6003 6.70563C18.2797 6.46925 17.9592 6.2497 17.6276 6.04039C16.2357 4.68868 17.8099 3.57848 18.1743 3.44675C18.5556 3.30916 18.3068 2.83639 17.0751 2.84225C15.8434 2.84737 14.7164 3.26013 13.2798 3.80974C13.0697 3.89244 12.8487 3.95245 12.6226 4.00222C11.3192 3.75485 9.96528 3.69997 8.55136 3.85951C5.88893 4.1559 3.7622 5.41467 2.19899 7.56335C0.321085 10.146 -0.120946 13.0807 0.419884 16.1412C0.988524 19.3672 2.63516 22.0377 5.16514 24.1256C7.78878 26.2904 10.8106 27.3516 14.2582 27.1481C16.352 27.0274 18.683 26.7471 21.3125 24.5215C21.9755 24.8516 22.6715 24.9833 23.8256 25.0821C24.7148 25.1648 25.571 25.0382 26.2341 24.9006C27.2726 24.6811 27.2008 23.7195 26.8254 23.5431C23.7817 22.1255 24.4499 22.7022 23.8424 22.2353C25.3888 20.4057 27.7512 17.1534 28.4801 12.725C28.5518 12.2361 28.6433 11.5475 28.6323 11.1516C28.6265 10.9101 28.6821 10.8164 28.958 10.7886C29.7206 10.7007 30.4605 10.4922 31.1403 10.1182C33.1126 9.04094 33.9082 7.27135 34.0955 5.15047C34.1233 4.82627 34.0897 4.49109 33.7472 4.32057ZM16.5613 23.4113C13.6113 21.0921 12.1806 20.3288 11.59 20.3618C11.0374 20.3947 11.137 21.027 11.2584 21.439C11.3858 21.8459 11.5512 22.1262 11.7832 22.4834C11.9434 22.7198 12.0539 23.071 11.6229 23.3352C10.673 23.9229 9.0212 23.1376 8.94363 23.0989C7.02108 21.9667 5.41396 20.4723 4.28107 18.4282C3.18697 16.4611 2.55173 14.3504 2.44708 12.0978C2.41927 11.5541 2.57954 11.3616 3.12111 11.2628C3.83392 11.1311 4.56869 11.1033 5.28077 11.2079C8.29156 11.6477 10.8545 12.9936 13.0031 15.1262C14.2297 16.3403 15.1577 17.7915 16.1135 19.2091C17.13 20.7145 18.2234 22.1489 19.6161 23.325C20.1078 23.737 20.5001 24.0502 20.8755 24.2815C19.7434 24.4081 17.8538 24.4352 16.5613 23.4128V23.4113ZM17.9753 14.3168C17.9753 14.0753 18.1685 13.8828 18.4114 13.8828C18.4663 13.8828 18.5161 13.8938 18.5607 13.9099C18.6215 13.9318 18.6771 13.9648 18.721 14.0145C18.7986 14.0914 18.8425 14.2011 18.8425 14.3168C18.8425 14.5583 18.6493 14.7508 18.4063 14.7508C18.1633 14.7508 17.9753 14.5583 17.9753 14.3168ZM22.367 16.5694C22.0853 16.685 21.8035 16.7838 21.5327 16.7948C21.1127 16.8167 20.6545 16.6462 20.4057 16.4376C20.0193 16.1134 19.7427 15.9319 19.627 15.3662C19.5773 15.1247 19.6051 14.7508 19.649 14.5363C19.7485 14.0745 19.638 13.7781 19.3123 13.5088C19.0474 13.2893 18.71 13.2285 18.3397 13.2285C18.2014 13.2285 18.0748 13.1678 17.9804 13.1187C17.826 13.0419 17.6986 12.8494 17.8201 12.613C17.8589 12.5362 18.047 12.3496 18.0909 12.3167C18.5937 12.0305 19.1733 12.1242 19.7097 12.3386C20.2066 12.5421 20.5828 12.9153 21.1236 13.443C21.6762 14.0804 21.7757 14.256 22.0904 14.7347C22.3392 15.1086 22.5654 15.4928 22.7205 15.9327C22.8142 16.2071 22.6927 16.4318 22.367 16.5694Z" fill="currentColor"></path></g><defs><clipPath id="clip0_10227_148760"><rect width="33.8978" height="24.9455" fill="white" transform="translate(0.206299 2.22727)"></rect></clipPath></defs></svg>`;
+
+const SPLASH_CSS = `/* ===== 启动向导 UI：跟随 DeepSeek Harness 主题（深/浅），含切换动画 ===== */
+:root {
+  --sp-brand: #4d6bfe;
+  --sp-brand-2: #6f8bff;
+  --sp-bg-1: #222633;
+  --sp-bg-2: #0f1219;
+  --sp-text-1: #f4f6fa;
+  --sp-text-2: #a9b1c2;
+  --sp-text-3: #7d8599;
+  --sp-border: rgba(255, 255, 255, .10);
+  --sp-border-strong: rgba(255, 255, 255, .16);
+  --sp-surface: rgba(255, 255, 255, .055);
+  --sp-surface-strong: rgba(255, 255, 255, .10);
+  --sp-hover: rgba(255, 255, 255, .09);
+  --sp-track: rgba(255, 255, 255, .10);
+  --sp-success: #34c56b;
+  --sp-success-soft: rgba(52, 197, 107, .14);
+  --sp-danger: #f0625f;
+  --sp-danger-soft: rgba(240, 98, 95, .14);
+  --sp-shadow: rgba(0, 0, 0, .30);
+  --sp-log-bg: rgba(0, 0, 0, .24);
+  --sp-code: #c8cfdd;
+}
+html.dsh-splash-theme-light {
+  --sp-brand: #4d6bfe;
+  --sp-brand-2: #6f8bff;
+  --sp-bg-1: #ffffff;
+  --sp-bg-2: #e7ecf5;
+  --sp-text-1: #181c26;
+  --sp-text-2: #434c5e;
+  --sp-text-3: #7a8399;
+  --sp-border: rgba(23, 27, 40, .12);
+  --sp-border-strong: rgba(23, 27, 40, .20);
+  --sp-surface: rgba(255, 255, 255, .72);
+  --sp-surface-strong: rgba(255, 255, 255, .94);
+  --sp-hover: rgba(23, 27, 40, .08);
+  --sp-track: rgba(23, 27, 40, .10);
+  --sp-success: #1f9d57;
+  --sp-success-soft: rgba(31, 157, 87, .12);
+  --sp-danger: #dd4744;
+  --sp-danger-soft: rgba(221, 71, 68, .12);
+  --sp-shadow: rgba(26, 35, 60, .16);
+  --sp-log-bg: rgba(255, 255, 255, .62);
+  --sp-code: #3d4557;
+}
+#dsh-splash {
+  --sp-text-1: #f7faff;
+  --sp-text-2: rgba(235, 243, 255, .76);
+  --sp-text-3: rgba(221, 234, 252, .58);
+  --sp-border: rgba(225, 239, 255, .15);
+  --sp-border-strong: rgba(225, 239, 255, .25);
+  --sp-surface: rgba(227, 240, 255, .075);
+  --sp-surface-strong: rgba(227, 240, 255, .13);
+  --sp-hover: rgba(227, 240, 255, .12);
+  --sp-track: rgba(225, 239, 255, .18);
+  --sp-log-bg: rgba(2, 15, 34, .38);
+  --sp-code: #d5e3f8;
+  position: fixed; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+  isolation: isolate;
+  background: #000;
+  -webkit-app-region: drag;
+  user-select: none;
+  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  color: #f7faff;
+  animation: dsh-splash-fade-in .18s ease-out both;
+}
+#dsh-splash-logo { color: #fff; }
+html.dsh-splash-theme-light #dsh-splash-logo { color: #fff; }
+#dsh-splash-web-bg {
+  position: absolute; inset: 0; z-index: 0;
+  width: 100%; height: 100%; border: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: #000;
+  transition: opacity .18s ease-out;
+}
+#dsh-splash-web-bg.dsh-splash-web-bg-ready { opacity: .96; }
+#dsh-splash::before, #dsh-splash::after,
+#dsh-splash .dsh-splash-aurora { display: none !important; }
+#dsh-splash::before {
+  content: "";
+  position: absolute; inset: 0; z-index: -1;
+  opacity: .42;
+  background-image:
+    linear-gradient(rgba(210, 230, 255, .085) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(210, 230, 255, .07) 1px, transparent 1px);
+  background-size: 88px 88px;
+  -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,.84), rgba(0,0,0,.36) 58%, transparent 100%);
+  mask-image: linear-gradient(to bottom, rgba(0,0,0,.84), rgba(0,0,0,.36) 58%, transparent 100%);
+}
+#dsh-splash::after {
+  content: "";
+  position: absolute; inset: 0; z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    rgba(2, 8, 18, 0) 37%,
+    rgba(2, 8, 18, .10) 48%,
+    rgba(1, 5, 12, .46) 65%,
+    rgba(0, 2, 6, .84) 83%,
+    #000 100%
+  );
+}
+.dsh-splash-aurora {
+  position: absolute; inset: 0; z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+.dsh-splash-aurora svg {
+  position: absolute;
+  width: 1250px; height: 760px;
+  left: 50%; top: -314px;
+  transform: translateX(-50%);
+  overflow: visible;
+  filter: blur(13px);
+  opacity: .72;
+}
+.dsh-splash-aurora path {
+  fill: none;
+  stroke: rgba(235, 244, 255, .68);
+  stroke-linecap: round;
+}
+.dsh-splash-aurora .dsh-splash-aurora-fade { opacity: .31; filter: blur(14px); }
+#dsh-splash-inner { position: relative; z-index: 2; }
+html.dsh-splash-theme-light #dsh-splash { background: #000; }
+@keyframes dsh-splash-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+#dsh-splash-inner {
+  width: min(680px, calc(100vw - 56px));
+  display: flex; flex-direction: column; align-items: center; gap: 22px;
+}
+/* JS 通过 hidden 属性控制显示，防止 display:flex 覆盖 */
+#dsh-splash [hidden] { display: none !important; }
+#dsh-splash-logo {
+  color: var(--sp-brand);
+  display: block;
+  filter: drop-shadow(0 10px 24px rgba(77, 107, 254, .28));
+  animation: dsh-splash-logo-in .55s cubic-bezier(.2, .9, .25, 1) both;
+}
+#dsh-splash-logo svg { display: block; }
+#dsh-splash-logo svg { width: 182px; height: 24px; }
+@keyframes dsh-splash-logo-in {
+  from { opacity: 0; transform: translateY(-8px) scale(.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+#dsh-splash-status { display: none; }
+
+/* 页面滑轨：切换动画 */
+#dsh-splash-stage {
+  width: 100%;
+  overflow: hidden;
+  -webkit-app-region: no-drag;
+}
+#dsh-splash-track {
+  display: flex;
+  width: 500%;
+  will-change: transform;
+  backface-visibility: hidden;
+  transform: translateX(0%);
+  transition: transform .6s cubic-bezier(.22, .9, .26, 1);
+}
+.dsh-splash-page {
+  box-sizing: border-box;
+  width: 20%;
+  flex: 0 0 20%;
+  min-height: 360px;
+  padding: 26px 34px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.dsh-splash-page-head { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.dsh-splash-page-title {
+  width: 100%;
+  text-align: center;
+  font-size: 21px;
+  line-height: 30px;
+  font-weight: 650;
+  letter-spacing: .2px;
+  color: var(--sp-text-1);
+}
+.dsh-splash-page-sub {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--sp-text-3);
+  text-align: center;
+}
+/* 检测步骤 */
+.dsh-splash-step-list {
+  width: max-content;
+  max-width: 100%;
+  margin: 22px auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.dsh-splash-step { display: flex; align-items: center; gap: 14px; }
+.dsh-splash-step-icon {
+  flex: none;
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  position: relative;
+  margin-top: 0;
+  border: 1px solid var(--sp-border-strong);
+  background: transparent;
+  transition: border-color .22s ease, background-color .22s ease, box-shadow .22s ease;
+}
+.dsh-splash-step-icon::before,
+.dsh-splash-step-icon::after {
+  content: "";
+  position: absolute;
+  opacity: 0;
+  transition: opacity .2s ease, transform .2s ease, background-color .2s ease;
+}
+.dsh-splash-step-icon.loading::before {
+  inset: 2px;
+  opacity: 1;
+  border-radius: 50%;
+  border: 2px solid rgba(125, 147, 255, .25);
+  border-top-color: var(--sp-brand);
+  animation: dsh-splash-spin .8s linear infinite;
+}
+.dsh-splash-step-icon.success {
+  background: var(--sp-success);
+  border-color: var(--sp-success);
+  box-shadow: 0 0 0 4px var(--sp-success-soft);
+  animation: dsh-splash-icon-pop .36s cubic-bezier(.2, .86, .3, 1.2) both;
+}
+.dsh-splash-step-icon.success::before {
+  left: 5px; top: 9px;
+  width: 5px; height: 2px;
+  opacity: 1;
+  transform: rotate(45deg);
+  background: #fff;
+  border-radius: 1px;
+}
+.dsh-splash-step-icon.success::after {
+  left: 8px; top: 6px;
+  width: 9px; height: 2px;
+  opacity: 1;
+  transform: rotate(-45deg);
+  background: #fff;
+  border-radius: 1px;
+}
+.dsh-splash-step-icon.fail {
+  background: var(--sp-danger);
+  border-color: var(--sp-danger);
+  box-shadow: 0 0 0 4px var(--sp-danger-soft);
+  animation: dsh-splash-icon-pop .36s cubic-bezier(.2, .86, .3, 1.2) both;
+}
+.dsh-splash-step-icon.fail::before,
+.dsh-splash-step-icon.fail::after {
+  left: 4px; top: 9px;
+  width: 12px; height: 2px;
+  opacity: 1;
+  background: #fff;
+  border-radius: 1px;
+}
+.dsh-splash-step-icon.fail::before { transform: rotate(45deg); }
+.dsh-splash-step-icon.fail::after { transform: rotate(-45deg); }
+@keyframes dsh-splash-icon-pop {
+  0% { transform: scale(.35); }
+  62% { transform: scale(1.22); }
+  100% { transform: scale(1); }
+}
+@keyframes dsh-splash-spin { to { transform: rotate(360deg); } }
+.dsh-splash-step-body { min-width: 0; flex: none; }
+.dsh-splash-step-title {
+  font-size: 14.5px;
+  line-height: 20px;
+  font-weight: 550;
+  color: var(--sp-text-1);
+}
+.dsh-splash-step-detail {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--sp-text-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* 底部操作 */
+.dsh-splash-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: auto;
+  padding-top: 26px;
+}
+.dsh-splash-next-btn {
+  width: 56px; height: 56px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  cursor: pointer;
+  background: linear-gradient(135deg, var(--sp-brand), var(--sp-brand-2));
+  color: #fff;
+  box-shadow: 0 14px 28px rgba(77, 107, 254, .32);
+  transition: transform .16s ease, box-shadow .2s ease, filter .2s ease;
+}
+.dsh-splash-next-btn:hover { transform: translateY(-2px); box-shadow: 0 18px 34px rgba(77, 107, 254, .40); filter: brightness(1.06); }
+.dsh-splash-next-btn:active { transform: translateY(0) scale(.96); }
+.dsh-splash-next-btn[hidden] { display: none; }
+.dsh-splash-next-btn svg { display: block; width: 22px; height: 22px; }
+.dsh-splash-next-dark { background: linear-gradient(135deg, var(--sp-brand), var(--sp-brand-2)); color: #fff; }
+.dsh-splash-next-light { background: linear-gradient(135deg, var(--sp-brand), var(--sp-brand-2)); color: #fff; }
+.dsh-splash-next-label {
+  font-size: 11px;
+  color: var(--sp-text-3);
+  text-align: center;
+  min-height: 16px;
+}
+/* 按钮 */
+.dsh-splash-confirm-actions {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 28px;
+}
+.dsh-splash-btn {
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  height: 40px;
+  min-width: 104px;
+  border-radius: 20px;
+  padding: 0 24px;
+  font: 600 13.5px/1 inherit;
+  transition: transform .1s ease, filter .15s ease, background-color .18s ease, border-color .18s ease, box-shadow .18s ease;
+}
+.dsh-splash-btn:hover { filter: brightness(1.06); }
+.dsh-splash-btn:active { transform: scale(.97); }
+.dsh-splash-btn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+  filter: saturate(.6);
+}
+.dsh-splash-btn-primary {
+  background: linear-gradient(90deg, var(--sp-brand), var(--sp-brand-2));
+  color: #fff;
+  box-shadow: 0 10px 22px rgba(77, 107, 254, .30);
+}
+.dsh-splash-btn-secondary {
+  background: var(--sp-surface);
+  color: var(--sp-text-1);
+  border: 1px solid var(--sp-border-strong);
+}
+.dsh-splash-btn-secondary:hover { background: var(--sp-hover); }
+/* 安装位置 */
+.dsh-splash-path-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 24px;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--sp-surface);
+  border: 1px solid var(--sp-border);
+  transition: border-color .18s ease, background-color .18s ease;
+}
+.dsh-splash-path-row:focus-within {
+  border-color: var(--sp-brand);
+  box-shadow: 0 0 0 3px rgba(77, 107, 254, .16);
+}
+.dsh-splash-path-input {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  box-sizing: border-box;
+  padding: 0 12px;
+  border: none;
+  outline: none;
+  border-radius: 10px;
+  background: var(--sp-surface-strong);
+  color: var(--sp-text-1);
+  font-size: 11.5px;
+  font-family: ui-monospace, Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dsh-splash-path-input:disabled { opacity: .8; }
+.dsh-splash-path-browse {
+  appearance: none;
+  border: 1px solid var(--sp-border);
+  cursor: pointer;
+  flex: none;
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--sp-text-2);
+  font: 500 11.5px/1 inherit;
+  transition: background-color .15s ease, color .15s ease, border-color .15s ease;
+}
+.dsh-splash-path-browse:hover { background: var(--sp-hover); color: var(--sp-text-1); border-color: var(--sp-border-strong); }
+.dsh-splash-install-button {
+  width: auto;
+  min-width: 136px;
+  align-self: center;
+  margin-top: 22px;
+}
+.dsh-splash-global-pill {
+  align-self: center;
+  margin-top: 30px;
+  padding: 10px 22px;
+  border-radius: 999px;
+  background: var(--sp-surface-strong);
+  color: var(--sp-text-1);
+  border: 1px solid var(--sp-border);
+  font-size: 13px;
+  font-weight: 600;
+}
+.dsh-splash-custom-toggle {
+  align-self: center;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--sp-text-3);
+  cursor: pointer;
+  font: 500 12px/1 inherit;
+  padding: 8px 12px;
+}
+.dsh-splash-custom-toggle:hover { color: var(--sp-text-1); }
+.dsh-splash-path-row.dsh-splash-path-hidden { display: flex; }
+
+/* 安装页视觉收束：单一主操作，选项与自定义入口保持轻量。 */
+.dsh-splash-page[data-page="location"] {
+  gap: 12px;
+  padding-top: 18px;
+}
+.dsh-splash-page[data-page="location"] .dsh-splash-page-head {
+  margin-bottom: 10px;
+}
+.dsh-splash-page[data-page="location"] .dsh-splash-page-title {
+  font-size: 20px;
+  font-weight: 650;
+}
+.dsh-splash-page[data-page="detect"] .dsh-splash-page-title,
+.dsh-splash-page[data-page="location"] .dsh-splash-page-title,
+.dsh-splash-page[data-page="confirm"] .dsh-splash-page-title {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.dsh-splash-global-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 132px;
+  height: 42px;
+  box-sizing: border-box;
+  margin-top: 8px;
+  padding: 0 20px 0 34px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.56);
+  border: 1px solid rgba(77,107,254,.12);
+  color: var(--sp-text-1);
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 5px 14px rgba(54,72,115,.08);
+}
+.dsh-splash-global-pill::before {
+  content: "";
+  position: absolute;
+  left: 16px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #35b66b;
+  box-shadow: 0 0 0 3px rgba(53,182,107,.12);
+}
+.dsh-splash-install-button {
+  height: 44px;
+  min-width: 148px;
+  margin-top: 8px;
+  border-radius: 999px;
+  font-size: 14px;
+  box-shadow: 0 10px 22px rgba(77,107,254,.22);
+}
+.dsh-splash-custom-toggle {
+  margin-top: 0;
+  padding: 8px 12px;
+  min-width: 92px;
+  text-align: center;
+  color: var(--sp-text-3);
+  border-radius: 999px;
+  outline: none;
+}
+.dsh-splash-custom-toggle:focus,
+.dsh-splash-custom-toggle:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.dsh-splash-custom-toggle:hover {
+  background: rgba(77,107,254,.07);
+  color: var(--sp-text-1);
+}
+html.dsh-splash-theme-light .dsh-splash-global-pill {
+  background: rgba(255,255,255,.72);
+}
+
+/* 全局安装 / 自定义切换：淡出当前项，再从下方滑入目标项。 */
+.dsh-splash-page[data-page="location"] .dsh-splash-global-pill,
+.dsh-splash-page[data-page="location"] .dsh-splash-path-row {
+  max-height: 64px;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  overflow: hidden;
+  transition: max-height .28s cubic-bezier(.2,.8,.25,1), opacity .2s ease, transform .28s cubic-bezier(.2,.8,.25,1), margin .28s ease, padding .28s ease;
+}
+.dsh-splash-page[data-page="location"] .dsh-splash-path-row {
+  max-height: 56px;
+  margin-top: 8px;
+}
+.dsh-splash-page[data-page="location"] .dsh-splash-global-pill.dsh-splash-option-hidden,
+.dsh-splash-page[data-page="location"] .dsh-splash-path-row.dsh-splash-option-hidden {
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-10px) scale(.96);
+  margin-top: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-width: 0;
+  pointer-events: none;
+}
+.dsh-splash-page[data-page="location"] .dsh-splash-path-row.dsh-splash-option-hidden {
+  gap: 0;
+}
+/* 进度条 */
+.dsh-splash-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 26px;
+}
+#dsh-splash-track-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--sp-track);
+  overflow: hidden;
+}
+#dsh-splash-track-bar-inner {
+  position: relative;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--sp-brand), var(--sp-brand-2));
+  overflow: hidden;
+  transition: width .3s ease;
+}
+#dsh-splash-track-bar-inner::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .38), transparent);
+  transform: translateX(-100%);
+  animation: dsh-splash-bar-shimmer 1.6s ease-in-out infinite;
+}
+@keyframes dsh-splash-bar-shimmer {
+  0% { transform: translateX(-100%); }
+  60%, 100% { transform: translateX(260%); }
+}
+#dsh-splash-track-pct {
+  flex: none;
+  width: 44px;
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--sp-text-2);
+}
+/* 日志框 */
+.dsh-splash-log {
+  display: none;
+  margin-top: 16px;
+  border-radius: 14px;
+  background: var(--sp-log-bg);
+  border: 1px solid var(--sp-border);
+  overflow: hidden;
+}
+.dsh-splash-log-on { display: block; }
+.dsh-splash-log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 0;
+  font-size: 11px;
+  color: var(--sp-text-3);
+}
+.dsh-splash-log-scroll {
+  box-sizing: border-box;
+  max-height: 150px;
+  overflow-y: auto;
+  padding: 8px 12px 12px;
+  scrollbar-width: none;
+  font-size: 11px;
+  line-height: 1.7;
+  font-family: ui-monospace, Consolas, "Microsoft YaHei", monospace;
+  color: var(--sp-code);
+}
+.dsh-splash-log-scroll::-webkit-scrollbar { display: none; }
+.dsh-splash-log-scroll > div {
+  animation: dsh-splash-log-in .16s ease-out both;
+}
+.dsh-splash-log-scroll > div + div { margin-top: 4px; }
+@keyframes dsh-splash-log-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.dsh-splash-rounded-copy,
+.dsh-splash-log-copy,
+.dsh-splash-retry {
+  appearance: none;
+  border: 1px solid var(--sp-border);
+  cursor: pointer;
+  height: 24px;
+  padding: 0 12px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--sp-text-2);
+  font: 500 10.5px/1 inherit;
+  transition: background-color .15s ease, color .15s ease;
+}
+.dsh-splash-rounded-copy:hover,
+.dsh-splash-log-copy:hover,
+.dsh-splash-retry:hover { background: var(--sp-hover); color: var(--sp-text-1); }
+
+/* 启动页只保留必要信息；状态细节和辅助文案不参与布局。 */
+.dsh-splash-page-sub,
+.dsh-splash-step-detail,
+.dsh-splash-next-label { display: none !important; }
+
+/* 仅服务启动阶段显示的随机生产力文案。 */
+.dsh-splash-boot-message {
+  display: none;
+  margin-top: 7px;
+  min-height: 18px;
+  color: var(--sp-text-3);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+}
+#dsh-splash.dsh-splash-booting-state .dsh-splash-boot-message {
+  display: block;
+  animation: dsh-splash-boot-message-in .28s ease-out both;
+}
+@keyframes dsh-splash-boot-message-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 勾叉以圆心为基准绘制，避免视觉偏上或偏左。 */
+.dsh-splash-step-icon.success::before {
+  left: 50%; top: 50%;
+  width: 8px; height: 4px;
+  border-left: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  background: transparent;
+  border-radius: 0;
+  transform: translate(-38%, -62%) rotate(-45deg);
+}
+.dsh-splash-step-icon.success::after { display: none; }
+.dsh-splash-step-icon.fail::before,
+.dsh-splash-step-icon.fail::after {
+  left: 50%; top: 50%;
+  width: 12px; height: 2px;
+  background: #fff;
+  border-radius: 2px;
+  transform-origin: center;
+}
+.dsh-splash-step-icon.fail::before { transform: translate(-50%, -50%) rotate(45deg); }
+.dsh-splash-step-icon.fail::after { transform: translate(-50%, -50%) rotate(-45deg); }
+
+/* 完成页：Logo 下移放大并切换为主题反色，金色光束只扫 SVG。 */
+#dsh-splash-logo {
+  position: relative;
+  overflow: hidden;
+  transition: transform .72s cubic-bezier(.2,.86,.25,1), color .42s ease, filter .42s ease;
+}
+#dsh-splash-logo::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  top: -45%; bottom: -45%; left: -70%;
+  width: 22%;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent, rgba(244,205,91,.12) 28%, rgba(255,220,111,.82) 50%, rgba(244,205,91,.12) 72%, transparent);
+  transform: skewX(-18deg);
+  opacity: 0;
+}
+#dsh-splash.dsh-splash-ready-state #dsh-splash-logo {
+  animation: none;
+  transform: translateY(92px) scale(1.38);
+  filter: drop-shadow(0 12px 26px rgba(0,0,0,.16));
+}
+#dsh-splash.dsh-splash-ready-state #dsh-splash-logo::after {
+  opacity: 0;
+  animation: none;
+}
+@keyframes dsh-splash-logo-gold-sweep {
+  0%, 12% { left: -70%; opacity: 0; }
+  22% { opacity: 1; }
+  62%, 100% { left: 155%; opacity: 0; }
+}
+html.dsh-splash-theme-light #dsh-splash.dsh-splash-ready-state #dsh-splash-logo { color: #fff; }
+html:not(.dsh-splash-theme-light) #dsh-splash.dsh-splash-ready-state #dsh-splash-logo { color: #f4f6fb; }
+.dsh-splash-page[data-page="ready"] {
+  justify-content: center;
+  gap: 20px;
+  padding-top: 150px;
+}
+.dsh-splash-page[data-page="ready"] .dsh-splash-page-head {
+  flex: none;
+  margin: 0;
+}
+.dsh-splash-page[data-page="ready"] .dsh-splash-page-title {
+  display: block;
+  width: 100%;
+  font-size: 30px;
+  line-height: 40px;
+  font-weight: 400 !important;
+  color: var(--sp-text-1);
+  text-decoration: none;
+  border: 0;
+  background: none;
+}
+#dsh-splash.dsh-splash-ready-state .dsh-splash-page[data-page="ready"] .dsh-splash-page-title {
+  color: transparent;
+  background-image: linear-gradient(100deg, var(--sp-text-1) 28%, #f7d878 45%, #fff4b0 50%, #f7d878 55%, var(--sp-text-1) 72%);
+  background-size: 260% 100%;
+  background-position: 120% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: dsh-splash-title-gold-sweep 3.2s ease-in-out infinite;
+}
+@keyframes dsh-splash-title-gold-sweep {
+  0%, 18% { background-position: 120% 0; }
+  58%, 100% { background-position: -30% 0; }
+}
+.dsh-splash-page[data-page="ready"] .dsh-splash-action-row {
+  flex: none;
+  margin: 0;
+  padding: 0;
+}
+#dsh-splash-ready-start { background: #0c0d10 !important; color: #fff; box-shadow: 0 14px 30px rgba(0,0,0,.28); }
+
+`;
+
+/** 启动画面：logo + 状态文字 + 蓝色进度条 + 安装日志框（仅安装时出现）。 */
+function initSplash() {
+  // 主题由主进程通过启动参数同步注入（避免异步等待造成先闪默认色）
+  let theme = "dark";
+  try {
+    const arg = (process.argv || []).find((a) => a.startsWith("--dsh-splash-theme="));
+    if (arg) theme = arg.split("=")[1] || "dark";
+  } catch { /* 默认深色 */ }
+  document.documentElement.classList.toggle("dsh-splash-theme-light", theme === "light");
+  const style = document.createElement("style");
+  style.id = "dsh-splash-style";
+  style.textContent = SPLASH_CSS;
+  document.head.appendChild(style);
+  const root = document.createElement("div");
+  root.id = "dsh-splash";
+  root.innerHTML = `
+    <iframe id="dsh-splash-web-bg" src="harness-web/index.html" title="" aria-hidden="true"></iframe>
+    <div class="dsh-splash-aurora" aria-hidden="true">
+      <svg viewBox="0 0 1250 760" preserveAspectRatio="xMidYMid slice">
+        <path class="dsh-splash-aurora-fade" d="M 106 24 C 326 16, 369 319, 629 312 C 865 305, 901 36, 1146 42" stroke-width="106"/>
+        <path d="M 128 14 C 344 17, 381 300, 628 292 C 853 284, 909 26, 1127 34" stroke-width="56"/>
+        <path d="M 246 -8 C 459 80, 472 365, 681 373 C 905 381, 924 120, 1072 77" stroke-width="27" opacity=".58"/>
+      </svg>
+    </div>
+    <div id="dsh-splash-inner">
+      <div id="dsh-splash-logo">${SPLASH_LOGO_SVG}</div>
+      <div id="dsh-splash-status">正在启动…</div>
+      <div id="dsh-splash-stage">
+        <div id="dsh-splash-track">
+          <section class="dsh-splash-page" data-page="detect">
+            <div class="dsh-splash-page-head">
+              <div class="dsh-splash-page-title">环境检测</div>
+              <div class="dsh-splash-page-sub">正在检查本机 Node.js、DeepSeek Harness 和网络状态。</div>
+            </div>
+            <div class="dsh-splash-step-list">
+              <div class="dsh-splash-step" data-step="0">
+                <div class="dsh-splash-step-icon loading"></div>
+                <div class="dsh-splash-step-body">
+                <div class="dsh-splash-step-title">检测 Node.js 环境</div>
+                  <div class="dsh-splash-step-detail">正在检查 Node、npm、npx</div>
+                </div>
+              </div>
+              <div class="dsh-splash-step" data-step="1">
+                <div class="dsh-splash-step-icon"></div>
+                <div class="dsh-splash-step-body">
+                <div class="dsh-splash-step-title">检测 DeepSeek Harness 环境</div>
+                  <div class="dsh-splash-step-detail">等待上一步完成</div>
+                </div>
+              </div>
+              <div class="dsh-splash-step" data-step="2">
+                <div class="dsh-splash-step-icon"></div>
+                <div class="dsh-splash-step-body">
+                  <div class="dsh-splash-step-title">检测当前网络状态</div>
+                  <div class="dsh-splash-step-detail">等待上一步完成</div>
+                </div>
+              </div>
+            </div>
+            <div class="dsh-splash-action-row">
+              <button class="dsh-splash-next-btn" id="dsh-splash-detect-next" type="button" hidden aria-label="下一步">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+            </div>
+            <div class="dsh-splash-next-label" id="dsh-splash-detect-label">正在检测环境…</div>
+          </section>
+
+          <section class="dsh-splash-page" data-page="confirm">
+            <div class="dsh-splash-page-head">
+              <div class="dsh-splash-page-title">是否使用本机环境</div>
+              <div class="dsh-splash-page-sub" id="dsh-splash-confirm-sub">检测到本机已有可用环境，是否直接使用？</div>
+            </div>
+            <div class="dsh-splash-confirm-actions">
+              <button class="dsh-splash-btn dsh-splash-btn-primary" id="dsh-splash-confirm-yes" type="button">是</button>
+              <button class="dsh-splash-btn dsh-splash-btn-secondary" id="dsh-splash-confirm-no" type="button">否</button>
+            </div>
+            <div class="dsh-splash-page-sub">选择“是”后，后续更新将继续基于本机环境。</div>
+          </section>
+
+          <section class="dsh-splash-page" data-page="location">
+            <div class="dsh-splash-page-head">
+              <div class="dsh-splash-page-title" id="dsh-splash-location-title">选择安装位置</div>
+              <div class="dsh-splash-page-sub" id="dsh-splash-location-sub">默认安装到本软件的安装位置。</div>
+            </div>
+            <div class="dsh-splash-path-row dsh-splash-path-hidden" id="dsh-splash-path-row">
+              <input class="dsh-splash-path-input" id="dsh-splash-install-path" type="text" readonly />
+              <button class="dsh-splash-path-browse" id="dsh-splash-install-browse" type="button">更改…</button>
+            </div>
+            <button class="dsh-splash-btn dsh-splash-btn-primary dsh-splash-install-button" id="dsh-splash-install-go" type="button">开始全局安装</button>
+            <button class="dsh-splash-custom-toggle" id="dsh-splash-custom-toggle" type="button">自定义</button>
+            <div class="dsh-splash-page-sub">安装目录会决定后续运行时和更新位置。</div>
+          </section>
+
+          <section class="dsh-splash-page" data-page="installing">
+            <div class="dsh-splash-page-head">
+              <div class="dsh-splash-page-title" id="dsh-splash-install-title">正在安装</div>
+              <div class="dsh-splash-page-sub" id="dsh-splash-install-sub">请稍候，正在下载并安装所需组件。</div>
+              <div class="dsh-splash-boot-message" id="dsh-splash-boot-message"></div>
+            </div>
+            <div class="dsh-splash-progress-row" id="dsh-splash-bar-row" hidden>
+              <div id="dsh-splash-track-bar"><div id="dsh-splash-track-bar-inner"></div></div>
+              <span id="dsh-splash-track-pct">0%</span>
+            </div>
+            <div class="dsh-splash-log" id="dsh-splash-log">
+              <div class="dsh-splash-log-head">
+                <span>安装日志</span>
+                <div style="display:flex;align-items:center;gap:6px">
+                  <button class="dsh-splash-retry" id="dsh-splash-retry" type="button" hidden>重试安装</button>
+                  <button class="dsh-splash-rounded-copy" id="dsh-splash-log-copy" type="button">复制日志</button>
+                </div>
+              </div>
+              <div class="dsh-splash-log-scroll" id="dsh-splash-log-scroll"></div>
+            </div>
+          </section>
+
+          <section class="dsh-splash-page" data-page="ready">
+            <div class="dsh-splash-page-head">
+              <div class="dsh-splash-page-title">开始使用</div>
+              <div class="dsh-splash-page-sub" id="dsh-splash-ready-sub">环境已准备就绪。</div>
+            </div>
+            <div class="dsh-splash-action-row">
+              <button class="dsh-splash-next-btn" id="dsh-splash-ready-start" type="button" aria-label="开始使用">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+            </div>
+            <div class="dsh-splash-next-label">开始使用</div>
+          </section>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(root);
+  const webBackground = root.querySelector("#dsh-splash-web-bg");
+  if (webBackground) {
+    webBackground.addEventListener("load", () => webBackground.classList.add("dsh-splash-web-bg-ready"), { once: true });
+  }
+  const status = root.querySelector("#dsh-splash-status");
+  const track = root.querySelector("#dsh-splash-track");
+  const detectNext = root.querySelector("#dsh-splash-detect-next");
+  const detectLabel = root.querySelector("#dsh-splash-detect-label");
+  const confirmSub = root.querySelector("#dsh-splash-confirm-sub");
+  const locationTitle = root.querySelector("#dsh-splash-location-title");
+  const locationSub = root.querySelector("#dsh-splash-location-sub");
+  const installPath = root.querySelector("#dsh-splash-install-path");
+  const installTitle = root.querySelector("#dsh-splash-install-title");
+  const installSub = root.querySelector("#dsh-splash-install-sub");
+  const bootMessage = root.querySelector("#dsh-splash-boot-message");
+  const installBrowse = root.querySelector("#dsh-splash-install-browse");
+  const installPathRow = root.querySelector("#dsh-splash-path-row");
+  const customToggle = root.querySelector("#dsh-splash-custom-toggle");
+  const installGo = root.querySelector("#dsh-splash-install-go");
+  const logCopy = root.querySelector("#dsh-splash-log-copy");
+  const retryInstall = root.querySelector("#dsh-splash-retry");
+  const readySub = root.querySelector("#dsh-splash-ready-sub");
+  const barRow = root.querySelector("#dsh-splash-bar-row");
+  const bar = root.querySelector("#dsh-splash-track-bar-inner");
+  const pct = root.querySelector("#dsh-splash-track-pct");
+  const logOuter = root.querySelector("#dsh-splash-log");
+  const logBox = root.querySelector("#dsh-splash-log-scroll");
+  const confirmYes = root.querySelector("#dsh-splash-confirm-yes");
+  const confirmNo = root.querySelector("#dsh-splash-confirm-no");
+  const readyStart = root.querySelector("#dsh-splash-ready-start");
+  const stepRows = Array.from(root.querySelectorAll("[data-step]")).map((row) => ({
+    row,
+    icon: row.querySelector(".dsh-splash-step-icon"),
+    detail: row.querySelector(".dsh-splash-step-detail"),
+  }));
+  const pageMap = { detect: 0, confirm: 1, location: 2, installing: 3, ready: 4 };
+  let currentNextPage = "confirm";
+  let currentInstallMode = "bundled";
+  let currentNativeInfo = null;
+  let customInstall = false;
+  let startupTagline = null;
+  const STARTUP_TAGLINES = [
+    "正在准备您的 AI 生产力空间…",
+    "正在启动您的智能工作台…",
+    "正在连接您的 AI 助手…",
+    "正在整理您的创作与思考环境…",
+    "正在唤醒您的高效工作伙伴…",
+    "正在加载您的智能生产力工具…",
+    "正在准备下一次灵感与创造…",
+    "正在开启您的 AI 工作流…",
+    "正在为您构建更高效的工作方式…",
+    "正在让想法更快成为成果…",
+  ];
+  const themeClass = theme === "light" ? "dsh-splash-next-light" : "dsh-splash-next-dark";
+  detectNext.classList.add(themeClass);
+  readyStart.classList.add(themeClass);
+  const setPage = (page) => {
+    const idx = Object.prototype.hasOwnProperty.call(pageMap, page) ? pageMap[page] : 0;
+    track.style.transform = `translateX(-${idx * 20}%)`;
+    root.classList.toggle("dsh-splash-ready-state", page === "ready");
+    root.classList.remove("dsh-splash-booting-state");
+  };
+  const resolveInstallMode = () => {
+    const native = currentNativeInfo;
+    if (native && native.node && native.npm && native.npx && !native.dsh) return "local-node";
+    return "bundled";
+  };
+  const setStepState = (index, state, detail) => {
+    const entry = stepRows[index];
+    if (!entry) return;
+    entry.icon.className = `dsh-splash-step-icon${state ? ` ${state}` : ""}`;
+    if (typeof detail === "string" && detail !== "") entry.detail.textContent = detail;
+  };
+  const setInstallInputs = (disabled) => {
+    installPath.disabled = !!disabled;
+    installBrowse.disabled = !!disabled;
+    installGo.disabled = !!disabled;
+  };
+  const setInstallModeView = (custom) => {
+    customInstall = !!custom;
+    installPathRow.classList.toggle("dsh-splash-path-hidden", !customInstall);
+    installPathRow.classList.toggle("dsh-splash-option-hidden", !customInstall);
+    customToggle.textContent = customInstall ? "使用全局安装" : "自定义";
+    installGo.textContent = customInstall ? "开始安装" : "开始全局安装";
+  };
+  const setInstallSubtitle = (mode) => {
+    if (mode === "native") {
+      installTitle.textContent = "开始使用本机环境";
+      installSub.textContent = "检测到本机已有可用环境，点击开始使用即可进入主界面。";
+      locationTitle.textContent = "开始安装";
+      locationSub.textContent = "当前将使用本机环境，不需要额外下载。";
+      readySub.textContent = "本机环境已准备就绪。";
+      return;
+    }
+    if (mode === "local-node") {
+      installTitle.textContent = "选择安装位置";
+      installSub.textContent = "将使用本机 Node 安装 DeepSeek Harness。";
+      locationTitle.textContent = "选择安装位置";
+      locationSub.textContent = "将使用本机 Node 安装 DeepSeek Harness。";
+      readySub.textContent = "安装完成，可以开始使用。";
+      return;
+    }
+    if (mode === "global") {
+      installTitle.textContent = "正在安装";
+      installSub.textContent = "将 dsh 安装到全局环境，便于后续安装插件。";
+      locationTitle.textContent = "安装 DeepSeek Harness";
+      locationSub.textContent = "默认使用全局安装。";
+      readySub.textContent = "全局安装完成，可以开始使用。";
+      return;
+    }
+    installTitle.textContent = "选择安装位置";
+    installSub.textContent = "将先下载 Node.js，再安装 DeepSeek Harness。";
+    locationTitle.textContent = "选择安装位置";
+    locationSub.textContent = "将先下载 Node.js，再安装 DeepSeek Harness。";
+    readySub.textContent = "安装完成，可以开始使用。";
+  };
+  const setDetectAction = (show, labelText, nextPage) => {
+    detectNext.hidden = !show;
+    detectLabel.textContent = labelText || "正在检测环境…";
+    currentNextPage = nextPage || "confirm";
+  };
+  ipcRenderer.on("dsh:boot-progress", (_event, payload) => {
+    if (!payload || typeof payload !== "object") return;
+    if (typeof payload.percent === "number") {
+      const clamped = Math.min(100, Math.max(0, payload.percent));
+      bar.style.width = `${clamped}%`;
+      pct.textContent = `${Math.round(clamped)}%`;
+    }
+    if (typeof payload.stage === "string" && payload.stage !== "") status.textContent = payload.stage;
+    if (typeof payload.defaultDir === "string" && payload.defaultDir !== "") installPath.value = payload.defaultDir;
+    if (typeof payload.installMode === "string" && payload.installMode !== "") {
+      currentInstallMode = payload.installMode;
+      setInstallSubtitle(currentInstallMode);
+    }
+    if (payload.native && typeof payload.native === "object") {
+      currentNativeInfo = payload.native;
+    }
+    if (payload.steps && Array.isArray(payload.steps)) {
+      payload.steps.forEach((step, index) => {
+        if (!step || typeof step !== "object") return;
+        const state = typeof step.state === "string" ? step.state : "idle";
+        const detail = typeof step.detail === "string" ? step.detail : "";
+        setStepState(index, state, detail);
+      });
+    }
+    if (payload.page === "detect") {
+      setPage("detect");
+      setInstallInputs(true);
+      setInstallSubtitle(currentInstallMode);
+      barRow.hidden = true;
+      logOuter.classList.remove("dsh-splash-log-on");
+      detectNext.hidden = !payload.detectComplete;
+      detectLabel.textContent = payload.detectComplete ? "点击继续" : "正在检测环境…";
+      currentNextPage = payload.nextPage || "confirm";
+      return;
+    }
+    if (payload.page === "confirm") {
+      setPage("confirm");
+      setInstallInputs(true);
+      setInstallSubtitle("native");
+      barRow.hidden = true;
+      logOuter.classList.remove("dsh-splash-log-on");
+      return;
+    }
+    if (payload.page === "location") {
+      setPage("location");
+      setInstallInputs(false);
+      setInstallModeView(false);
+      setInstallSubtitle(currentInstallMode);
+      barRow.hidden = true;
+      logOuter.classList.remove("dsh-splash-log-on");
+      return;
+    }
+    if (payload.page === "installing") {
+      setPage("installing");
+      setInstallInputs(true);
+      setInstallSubtitle(currentInstallMode);
+      if (payload.installError !== true) {
+        installTitle.textContent = "正在安装";
+        installSub.textContent = "正在准备 DeepSeek Harness 运行环境。";
+      }
+      if (payload.installError === true) {
+        installTitle.textContent = "安装失败";
+        installSub.textContent = typeof payload.stage === "string" && payload.stage !== "" ? payload.stage : "请检查网络后重试";
+      }
+      barRow.hidden = false;
+      logOuter.classList.add("dsh-splash-log-on");
+      retryInstall.hidden = payload.installError !== true;
+      return;
+    }
+    if (payload.page === "ready") {
+      setPage("ready");
+      setInstallInputs(true);
+      setInstallSubtitle(typeof payload.installMode === "string" ? payload.installMode : currentInstallMode);
+      barRow.hidden = true;
+      logOuter.classList.remove("dsh-splash-log-on");
+      detectNext.hidden = true;
+      readyStart.disabled = false;
+      return;
+    }
+    if (payload.page === "booting") {
+      // 已安装/已就绪后的启动阶段：显示进度条加载（规则4），无日志
+      setPage("installing");
+      if (startupTagline === null) {
+        startupTagline = STARTUP_TAGLINES[Math.floor(Math.random() * STARTUP_TAGLINES.length)];
+      }
+      bootMessage.textContent = startupTagline;
+      root.classList.add("dsh-splash-booting-state");
+      setInstallInputs(true);
+      installTitle.textContent = "正在启动";
+      installSub.textContent = typeof payload.stage === "string" && payload.stage !== "" ? payload.stage : "正在启动服务…";
+      barRow.hidden = false;
+      logOuter.classList.remove("dsh-splash-log-on");
+      detectNext.hidden = true;
+      readyStart.disabled = true;
+      return;
+    }
+    // 其余无 page 的进度事件（如“服务已就绪 100%”）：只更新进度/状态，不切换页面
+  });
+  ipcRenderer.on("dsh:boot-log", (_event, message) => {
+    if (!message || typeof message.line !== "string") return;
+    const line = document.createElement("div");
+    line.textContent = message.line;
+    logBox.appendChild(line);
+    logBox.scrollTop = logBox.scrollHeight;
+    while (logBox.childElementCount > 400) logBox.removeChild(logBox.firstChild);
+  });
+  detectNext.addEventListener("click", () => {
+    if (currentNextPage === "confirm") {
+      setPage("confirm");
+      return;
+    }
+    currentInstallMode = resolveInstallMode();
+    setInstallSubtitle(currentInstallMode);
+    setPage("location");
+    api.chooseBootMode("install");
+  });
+  confirmYes.addEventListener("click", () => {
+    api.chooseBootMode("native");
+  });
+  confirmNo.addEventListener("click", () => {
+    currentInstallMode = resolveInstallMode();
+    setInstallSubtitle(currentInstallMode);
+    setPage("location");
+    api.chooseBootMode("install");
+  });
+  installBrowse.addEventListener("click", async () => {
+    const dir = await api.chooseRuntimeDir();
+    if (dir && typeof dir === "string") installPath.value = dir;
+  });
+  installGo.addEventListener("click", () => {
+    if (customInstall) {
+      const dir = installPath.value.trim();
+      if (dir === "") return;
+      api.startRuntimeInstall({ mode: "custom", dir });
+      return;
+    }
+    api.startRuntimeInstall({ mode: "global" });
+  });
+  retryInstall.addEventListener("click", () => {
+    retryInstall.hidden = true;
+    if (customInstall) {
+      const dir = installPath.value.trim();
+      if (dir !== "") api.startRuntimeInstall({ mode: "custom", dir });
+      return;
+    }
+    api.startRuntimeInstall({ mode: "global" });
+  });
+  customToggle.addEventListener("click", () => {
+    setInstallModeView(!customInstall);
+  });
+  readyStart.addEventListener("click", () => {
+    readyStart.disabled = true;
+    api.chooseBootMode("start");
+  });
+  logCopy.addEventListener("click", async () => {
+    try {
+      const text = Array.from(logBox.querySelectorAll("div")).map((el) => el.textContent || "").join("\n").trim();
+      if (!text) return;
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+    } catch { /* ignore */ }
+  });
+  setInstallSubtitle("bundled");
+  // 已安装过（--dsh-boot-resume=1）：启动页直接进入“正在启动”视图（logo + 状态 + 进度条），
+  // 由 booting 事件驱动；首次运行则从环境检测向导开始。
+  const bootResume = (process.argv || []).some((a) => a === "--dsh-boot-resume=1");
+  if (bootResume) {
+    setPage("installing");
+    installTitle.textContent = "正在启动";
+    installSub.textContent = "正在准备环境…";
+    barRow.hidden = false;
+    logOuter.classList.remove("dsh-splash-log-on");
+  } else {
+    setPage("detect");
+  }
+}
+
+/** 读取 DSH 主题底色，估算明暗并上报主进程（供下次启动画面跟随）。 */
+function reportThemeToMain() {
+  const readBg = () => {
+    try {
+      return getComputedStyle(document.documentElement).getPropertyValue("--dsw-alias-bg-base").trim();
+    } catch {
+      return "";
+    }
+  };
+  const luminance = (bg) => {
+    const m = bg.match(/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+    if (m) return (Number(m[1]) * 0.299 + Number(m[2]) * 0.587 + Number(m[3]) * 0.114) / 255;
+    if (/^#[0-9a-fA-F]{6}$/.test(bg)) {
+      const r = parseInt(bg.slice(1, 3), 16);
+      const g = parseInt(bg.slice(3, 5), 16);
+      const b = parseInt(bg.slice(5, 7), 16);
+      return (r * 0.299 + g * 0.587 + b * 0.114) / 255;
+    }
+    return null;
+  };
+  let attempts = 0;
+  const tryReport = () => {
+    const lum = luminance(readBg());
+    if (lum !== null) {
+      ipcRenderer.send("dsh:theme", lum < 0.5 ? "dark" : "light");
+      return;
+    }
+    if (++attempts > 10) return;
+    setTimeout(tryReport, 400);
+  };
+  setTimeout(tryReport, 300);
+}
+
 function boot() {
   const init = () => {
+    // 启动画面模式：窗口先以 about:blank 打开，显示 logo/进度/安装日志；
+    // 导航到主界面（http://127.0.0.1）后进入正常模式（标题栏等）。
+    const isSplash = location.protocol === "file:";
+    if (isSplash) {
+      initSplash();
+      return;
+    }
     injectTitlebar();
     // 自绘更新弹窗事件监听（挂载一次；弹窗 DOM 按需创建）
     ipcRenderer.on("dsh:update-event", (_event, evt) => handleUpdateEvent(evt));
     // 通知主进程：本页面 preload 已就绪（用于更新完成后重载页面的握手）
     ipcRenderer.send("dsh:renderer-ready");
+    // 上报应用主题给主进程（持久化，供下次启动画面跟随主题）
+    reportThemeToMain();
   };
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init, { once: true });
@@ -1394,6 +2627,9 @@ const api = {
   /** 更新弹窗内用户操作：confirm / cancel / retry / retry-check / close */
   updateAction: (action) => ipcRenderer.send("dsh:update-action", action),
   getVersion: () => ipcRenderer.invoke("dsh:get-version"),
+  chooseBootMode: (mode) => ipcRenderer.send("dsh:boot-choice", mode),
+  chooseRuntimeDir: () => ipcRenderer.invoke("dsh:choose-runtime-dir"),
+  startRuntimeInstall: (dir) => ipcRenderer.send("dsh:runtime-install", dir),
 };
 
 contextBridge.exposeInMainWorld("dshDesktop", api);
