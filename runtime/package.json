@@ -1,0 +1,9 @@
+{
+  "name": "dsh-desktop-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "description": "DeepSeek Harness Desktop runtime (bundled Node + deps, npm update entry)",
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.1.0-rc.7"
+  }
+}

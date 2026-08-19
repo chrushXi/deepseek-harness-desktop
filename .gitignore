@@ -1,0 +1,15 @@
+# dependencies
+node_modules/
+runtime/node_modules/
+runtime/node.exe
+runtime/npm.cmd
+runtime/npx.cmd
+
+# build output
+dist/
+*.log
+.smoke-*.txt
+
+# OS
+Thumbs.db
+.DS_Store

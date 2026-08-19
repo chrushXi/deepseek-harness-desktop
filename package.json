@@ -1,0 +1,56 @@
+{
+  "name": "deepseek-harness-desktop",
+  "productName": "DeepSeek Harness",
+  "version": "1.0.0",
+  "description": "DeepSeek Harness 桌面版",
+  "main": "main.js",
+  "author": "DeepSeek Harness",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win",
+    "dist:nsis": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^37.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.deepseekai.harness.desktop",
+    "productName": "DeepSeek Harness",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js"
+    ],
+    "extraResources": [
+      {
+        "from": "runtime",
+        "to": "runtime",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ],
+      "icon": "assets/icon.ico",
+      "artifactName": "DeepSeekHarness-Setup-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "DeepSeek Harness",
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}
