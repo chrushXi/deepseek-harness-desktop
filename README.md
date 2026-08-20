@@ -32,18 +32,23 @@ DeepSeekHarness/
 ## 构建
 
 ```powershell
-# 1. 准备运行时（首次）
+# 1. 安装内置余额监控插件的依赖（首次，克隆后必做）
+cd internal\damage-pulse && npm install && cd ..\..
+
+# 2. 准备运行时（首次；本地 npx 缓存不存在时会自动改用 npm install 构建依赖树）
 powershell -ExecutionPolicy Bypass -File scripts\prepare-runtime.ps1
 
-# 2. 安装 electron / electron-builder（已装过可跳过）
+# 3. 安装 electron / electron-builder（已装过可跳过）
 npm install
 
-# 3. 开发运行（本地调试）
+# 4. 开发运行（本地调试）
 npm start
 
-# 4. 打包（NSIS 安装版，输出到 dist/）
+# 5. 打包（NSIS 安装版，输出到 dist/）
 npm run dist
 ```
+
+> `internal/damage-pulse` 的 `node_modules` 不入库（见 .gitignore），克隆后需先执行第 1 步。
 
 > 国内网络建议先设置镜像环境变量：
 > `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`

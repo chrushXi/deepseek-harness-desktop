@@ -8,7 +8,9 @@
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $runtime = Join-Path $root "runtime"
+# 本地 npx 缓存（作者机器上的 dsh 依赖树）；不存在时（如克隆到其他机器）回退到 npm install
 $npmCache = "C:\Users\fengq\AppData\Local\npm-cache\_npx\1e7f6d9597241db0"
+$useLocalCache = Test-Path $npmCache
 
 $nodeVersion = "v24.14.1"
 $nodeZipUrl = "https://npmmirror.com/mirrors/node/$nodeVersion/node-$nodeVersion-win-x64.zip"
@@ -20,10 +22,14 @@ New-Item -ItemType Directory -Force -Path $runtime | Out-Null
 $srcModules = Join-Path $npmCache "node_modules"
 $dstModules = Join-Path $runtime "node_modules"
 if (-not (Test-Path $dstModules)) {
-    Write-Host "==> copying node_modules ($srcModules -> $dstModules) ..."
-    robocopy $srcModules $dstModules /E /MT:16 /NFL /NDL /NJH /NJS /NP | Out-Null
-    if ($LASTEXITCODE -ge 8) { throw "robocopy failed with code $LASTEXITCODE" }
-    Write-Host "    copied."
+    if ($useLocalCache) {
+        Write-Host "==> copying node_modules ($srcModules -> $dstModules) ..."
+        robocopy $srcModules $dstModules /E /MT:16 /NFL /NDL /NJH /NJS /NP | Out-Null
+        if ($LASTEXITCODE -ge 8) { throw "robocopy failed with code $LASTEXITCODE" }
+        Write-Host "    copied."
+    } else {
+        Write-Host "==> local npx cache not found; dependency tree will be installed via npm after Node extraction."
+    }
 } else {
     Write-Host "==> node_modules already exists, skipping copy."
 }
@@ -60,6 +66,17 @@ if (-not (Test-Path $nodeExe)) {
     Write-Host "    node.exe ready."
 } else {
     Write-Host "==> node.exe already exists."
+}
+
+# ---------- 3.5. fallback: install dependency tree via bundled npm (portable) ----------
+if (-not (Test-Path $dstModules)) {
+    $npmCli = Join-Path $runtime "node_modules\npm\bin\npm-cli.js"
+    if (Test-Path $npmCli) {
+        Write-Host "==> installing dependencies via bundled npm ..."
+        & $runtime\node.exe $npmCli install --prefix $runtime --no-audit --no-fund --package-lock=false --registry=https://registry.npmmirror.com
+        if ($LASTEXITCODE -ne 0) { throw "npm install failed (exit $LASTEXITCODE)" }
+        Write-Host "    installed."
+    }
 }
 
 # ---------- 4. write runtime package.json (update entry) ----------
