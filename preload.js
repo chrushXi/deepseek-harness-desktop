@@ -438,7 +438,7 @@ function injectTitlebar() {
   const progress = $("dsh-tb-progress");
   updateBtn.addEventListener("click", () => api.checkUpdate(false));
   api.getVersion().then((info) => {
-    if (info && info.mode === "native") {
+    if (info && info.mode === "native" && info.native && info.native.dsh) {
       updateBtn.hidden = true;
     }
   }).catch(() => {});
@@ -2316,9 +2316,7 @@ function initSplash() {
     root.classList.remove("dsh-splash-booting-state");
   };
   const resolveInstallMode = () => {
-    const native = currentNativeInfo;
-    if (native && native.node && native.npm && native.npx && !native.dsh) return "local-node";
-    return "bundled";
+    return "global";
   };
   const setStepState = (index, state, detail) => {
     const entry = stepRows[index];
