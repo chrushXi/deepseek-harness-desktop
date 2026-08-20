@@ -1180,7 +1180,7 @@ function renderUpdateState(evt) {
         closable: false,
         body: `<div class="dsh-ud-row">
           <div class="dsh-ud-spinner"></div>
-          <div><div class="dsh-ud-msg">正在更新…</div><div class="dsh-ud-sub">正在从 npm 官方源下载并安装 v${esc(evt.latest)}，请稍候…</div></div>
+          <div><div class="dsh-ud-msg">正在更新…</div><div class="dsh-ud-sub">正在下载并安装 v${esc(evt.latest)}，请稍候…</div></div>
         </div>
         <div class="dsh-ud-bar"><div class="dsh-ud-bar-inner"></div></div>`,
       };
@@ -1190,7 +1190,7 @@ function renderUpdateState(evt) {
         closable: true,
         body: `<div class="dsh-ud-row">
           ${UD_ICONS.error}
-          <div><div class="dsh-ud-msg">更新失败</div><div class="dsh-ud-sub">已恢复旧版本运行</div></div>
+          <div><div class="dsh-ud-msg">更新失败</div><div class="dsh-ud-sub">${evt.restored === false ? "旧版本恢复失败" : "已恢复旧版本运行"}</div></div>
         </div>
         <div class="dsh-ud-detail">${esc(evt.detail)}</div>
         <div class="dsh-ud-actions">
@@ -2182,17 +2182,24 @@ function initSplash() {
           <section class="dsh-splash-page" data-page="detect">
             <div class="dsh-splash-page-head">
               <div class="dsh-splash-page-title">环境检测</div>
-              <div class="dsh-splash-page-sub">正在检查本机 Node.js 和网络状态。</div>
+              <div class="dsh-splash-page-sub"></div>
             </div>
             <div class="dsh-splash-step-list">
               <div class="dsh-splash-step" data-step="0">
                 <div class="dsh-splash-step-icon loading"></div>
                 <div class="dsh-splash-step-body">
-                <div class="dsh-splash-step-title">检测 Node.js 环境</div>
-                  <div class="dsh-splash-step-detail">正在检查 Node、npm、npx</div>
+                  <div class="dsh-splash-step-title">检测 Node.js 环境</div>
+                  <div class="dsh-splash-step-detail">正在检查 Node.js、npm</div>
                 </div>
               </div>
               <div class="dsh-splash-step" data-step="1">
+                <div class="dsh-splash-step-icon"></div>
+                <div class="dsh-splash-step-body">
+                  <div class="dsh-splash-step-title">检测 DeepSeek Harness 环境</div>
+                  <div class="dsh-splash-step-detail">等待上一步完成</div>
+                </div>
+              </div>
+              <div class="dsh-splash-step" data-step="2">
                 <div class="dsh-splash-step-icon"></div>
                 <div class="dsh-splash-step-body">
                   <div class="dsh-splash-step-title">检测当前网络状态</div>
@@ -2341,18 +2348,19 @@ function initSplash() {
   };
   const setInstallSubtitle = (mode) => {
     if (mode === "global") {
-      installTitle.textContent = "安装 Node.js";
-      installSub.textContent = "将先检查本机 Node.js 环境。";
-      locationTitle.textContent = "安装位置";
-      locationSub.textContent = "默认使用本软件的安装位置。";
-      readySub.textContent = "Node.js 已就绪，可以开始使用。";
+      const hasNode = !!(currentNativeInfo && currentNativeInfo.localNodeReady);
+      installTitle.textContent = hasNode ? "安装 DeepSeek Harness" : "安装运行环境";
+      installSub.textContent = "";
+      locationTitle.textContent = hasNode ? "安装 DeepSeek Harness" : "安装运行环境";
+      locationSub.textContent = "";
+      readySub.textContent = "";
       return;
     }
-    installTitle.textContent = "安装 Node.js";
-    installSub.textContent = "将先安装 Node.js，再直接启动。";
+    installTitle.textContent = "安装运行环境";
+    installSub.textContent = "";
     locationTitle.textContent = "选择安装位置";
-    locationSub.textContent = "将先安装 Node.js，再直接启动。";
-    readySub.textContent = "安装完成，可以开始使用。";
+    locationSub.textContent = "";
+    readySub.textContent = "";
   };
   const setDetectAction = (show, labelText, nextPage) => {
     detectNext.hidden = !show;
@@ -2481,6 +2489,10 @@ function initSplash() {
     }
     currentInstallMode = resolveInstallMode();
     setInstallSubtitle(currentInstallMode);
+    setInstallInputs(false);
+    setInstallModeView(false);
+    barRow.hidden = true;
+    logOuter.classList.remove("dsh-splash-log-on");
     setPage("location");
   });
   installBrowse.addEventListener("click", async () => {

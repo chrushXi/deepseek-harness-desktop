@@ -4,10 +4,10 @@
  * DeepSeek Harness Desktop —— Electron main process.
  *
  * 职责：
- *  1. 启动时先检测本机 Node / npm / npx / dsh，再决定是直接使用本机环境还是自动下载运行时；
+ *  1. 启动时先检测本机 Node / npm / DeepSeek Harness 托管运行槽，再决定是直接启动还是安装；
  *  2. 等待服务器就绪后，用毛玻璃半透明窗体加载本地 GUI（界面与 web 版完全一致）；
  *  3. 自绘标题栏（拖拽区 + 最小化/最大化/关闭 + 一键更新按钮）；
- *  4. 通过官方 npx 命令（npmmirror，可回退 npmjs）下载、启动和更新 dsh。
+ *  4. 通过软件托管的 npm 安装槽（npmmirror，可回退 npmjs）安装、启动和更新 dsh。
  */
 
 const { app, BrowserWindow, dialog, ipcMain, shell, nativeTheme } = require("electron");
@@ -55,7 +55,7 @@ const INTERNAL_DIR = isDev
 
 let NODE_EXE = null;
 let NPM_CLI = null;
-let NPX_CLI = null;
+let DSH_RUNTIME_DIR = null;
 let runtimeMode = "bundled";
 let nativeRuntime = null;
 let dshLaunchVersion = DSH_INSTALL_VERSION;
@@ -63,18 +63,13 @@ function setRuntimeDir(dir) {
   RUNTIME_DIR = dir;
   NODE_EXE = path.join(dir, "node.exe");
   NPM_CLI = path.join(dir, "node_modules", "npm", "bin", "npm-cli.js");
-  NPX_CLI = path.join(dir, "node_modules", "npm", "bin", "npx-cli.js");
 }
 function hasHealthyNpmRuntime() {
   return fs.existsSync(NPM_CLI)
-    && fs.existsSync(NPX_CLI)
     && fs.existsSync(path.join(RUNTIME_DIR, "node_modules", "npm", "package.json"));
 }
 function hasHealthyAppRuntime() {
   return fs.existsSync(NODE_EXE) && hasHealthyNpmRuntime();
-}
-function npxCacheDir() {
-  return path.join(RUNTIME_DIR, "npm-cache");
 }
 function setRuntimeMode(mode) {
   runtimeMode = mode === "native" || mode === "local-node" || mode === "global" ? mode : "bundled";
@@ -93,6 +88,27 @@ function defaultRuntimeDir() {
 function globalRuntimeDir() {
   return path.join(app.getPath("userData"), "global-node");
 }
+function managedNpmCacheDir() {
+  return path.join(app.getPath("userData"), "npm-cache");
+}
+function defaultManagedDshRuntimeDir() {
+  return path.join(app.getPath("userData"), "dsh-runtime");
+}
+function setDshRuntimeDir(dir) {
+  DSH_RUNTIME_DIR = dir ? path.resolve(dir) : null;
+}
+function managedDshRuntimeDir() {
+  return DSH_RUNTIME_DIR || defaultManagedDshRuntimeDir();
+}
+function managedDshPackageDir(baseDir = managedDshRuntimeDir()) {
+  return path.join(baseDir, "node_modules", "@deepseek-ai", "dsh");
+}
+function managedDshPackageJson(baseDir = managedDshRuntimeDir()) {
+  return path.join(managedDshPackageDir(baseDir), "package.json");
+}
+function managedDshBinPath(baseDir = managedDshRuntimeDir()) {
+  return path.join(managedDshPackageDir(baseDir), "lib", "bin.js");
+}
 function systemNodeDirectories() {
   return [
     process.env.ProgramFiles ? path.join(process.env.ProgramFiles, "nodejs") : null,
@@ -106,10 +122,10 @@ function refreshSystemNodePath() {
 }
 function normalizeNodeVersion(text) {
   const value = String(text ?? "").trim();
-  const match = value.match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
+  const match = value.match(/(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?:[-+][^\s]+)?(?:\s|$)/);
   if (!match) return null;
   return {
-    raw: value,
+    raw: `v${match[1]}.${match[2]}.${match[3]}`,
     major: Number(match[1]),
     minor: Number(match[2]),
     patch: Number(match[3]),
@@ -149,147 +165,113 @@ function readPackageVersion(file) {
   }
 }
 
+function probeManagedDshRuntime(baseDir = managedDshRuntimeDir()) {
+  const root = path.resolve(baseDir);
+  const packageJson = managedDshPackageJson(root);
+  const binPath = managedDshBinPath(root);
+  const version = readPackageVersion(packageJson);
+  const ready = !!version && fs.existsSync(binPath);
+  return {
+    root,
+    ready,
+    version,
+    packageJson,
+    binPath,
+  };
+}
+
 async function probeNodeToolchain() {
   refreshSystemNodePath();
-  const [nodePathText, npmPathText, npxPathText] = await Promise.all([
+  const [nodePathText, npmPathText] = await Promise.all([
     execVersion("where.exe", ["node"]),
     execVersion("where.exe", ["npm"]),
-    execVersion("where.exe", ["npx"]),
   ]);
   const nodePath = preferredWherePath(nodePathText)
     || systemNodeDirectories().map((dir) => path.join(dir, "node.exe")).find((file) => fs.existsSync(file))
     || null;
   const npmPath = (nodePath && fs.existsSync(path.join(path.dirname(nodePath), "npm.cmd")) ? path.join(path.dirname(nodePath), "npm.cmd") : null)
     || preferredWherePath(npmPathText);
-  const npxPath = (nodePath && fs.existsSync(path.join(path.dirname(nodePath), "npx.cmd")) ? path.join(path.dirname(nodePath), "npx.cmd") : null)
-    || preferredWherePath(npxPathText);
   const npmCliPath = nodePath
     ? path.join(path.dirname(nodePath), "node_modules", "npm", "bin", "npm-cli.js")
     : null;
-  const npxCliPath = nodePath
-    ? path.join(path.dirname(nodePath), "node_modules", "npm", "bin", "npx-cli.js")
-    : null;
   const hasNpmCli = !!npmCliPath && fs.existsSync(npmCliPath);
-  const hasNpxCli = !!npxCliPath && fs.existsSync(npxCliPath);
-  const [nodeVersionText, npmVersionText, npxVersionText, npmPrefixText, npmRootText, npmCacheText] = await Promise.all([
+  const [nodeVersionText, npmVersionText, npmPrefixText, npmRootText, npmCacheText] = await Promise.all([
     nodePath ? execVersion(nodePath, ["--version"]) : Promise.resolve(null),
     hasNpmCli ? execVersion(nodePath, [npmCliPath, "--version"]) : npmPath ? execVersion(npmPath, ["--version"]) : Promise.resolve(null),
-    hasNpxCli ? execVersion(nodePath, [npxCliPath, "--version"]) : npxPath ? execVersion(npxPath, ["--version"]) : Promise.resolve(null),
     hasNpmCli ? execVersion(nodePath, [npmCliPath, "prefix", "-g"]) : npmPath ? execVersion(npmPath, ["prefix", "-g"]) : Promise.resolve(null),
     hasNpmCli ? execVersion(nodePath, [npmCliPath, "root", "-g"]) : npmPath ? execVersion(npmPath, ["root", "-g"]) : Promise.resolve(null),
     hasNpmCli ? execVersion(nodePath, [npmCliPath, "config", "get", "cache"]) : npmPath ? execVersion(npmPath, ["config", "get", "cache"]) : Promise.resolve(null),
   ]);
   const node = normalizeNodeVersion(nodeVersionText);
   const npm = normalizeNodeVersion(npmVersionText);
-  const npx = normalizeNodeVersion(npxVersionText);
   const npmPrefix = firstLine(npmPrefixText);
   const npmRoot = firstLine(npmRootText);
   const npmCache = firstLine(npmCacheText);
   const nodeOk = node !== null;
   const nodeCompatible = node !== null && node.major >= DSH_MIN_RUNTIME_NODE_MAJOR;
   const npmOk = npm !== null;
-  const npxOk = npx !== null;
   return {
     node: node ? { ...node, ok: nodeOk, compatible: nodeCompatible } : null,
     nodePath,
     npm: npm ? { ...npm, ok: npmOk } : null,
     npmPath,
     npmCliPath: hasNpmCli ? npmCliPath : null,
-    npx: npx ? { ...npx, ok: npxOk } : null,
-    npxPath,
-    npxCliPath: hasNpxCli ? npxCliPath : null,
     npmPrefix,
     npmRoot,
     npmCache,
     nodeCompatible,
-    localNodeReady: nodeOk && npmOk && npxOk,
+    localNodeReady: nodeOk && nodeCompatible && npmOk,
   };
 }
 
+async function probePortableNodeToolchain() {
+  const nodePath = NODE_EXE && fs.existsSync(NODE_EXE) ? NODE_EXE : null;
+  const npmCliPath = NPM_CLI && fs.existsSync(NPM_CLI) ? NPM_CLI : null;
+  const [nodeVersionText, npmVersionText] = await Promise.all([
+    nodePath ? execVersion(nodePath, ["--version"]) : Promise.resolve(null),
+    nodePath && npmCliPath ? execVersion(nodePath, [npmCliPath, "--version"]) : Promise.resolve(null),
+  ]);
+  const node = normalizeNodeVersion(nodeVersionText);
+  const npm = normalizeNodeVersion(npmVersionText);
+  const nodeOk = node !== null;
+  const nodeCompatible = node !== null && node.major >= DSH_MIN_RUNTIME_NODE_MAJOR;
+  const npmOk = npm !== null;
+  return {
+    node: node ? { ...node, ok: nodeOk, compatible: nodeCompatible } : null,
+    nodePath,
+    npm: npm ? { ...npm, ok: npmOk } : null,
+    npmPath: null,
+    npmCliPath,
+    npmPrefix: RUNTIME_DIR,
+    npmRoot: RUNTIME_DIR ? path.join(RUNTIME_DIR, "node_modules") : null,
+    npmCache: managedNpmCacheDir(),
+    nodeCompatible,
+    localNodeReady: nodeOk && nodeCompatible && npmOk,
+    portable: true,
+  };
+}
+
+async function probeStartupNodeToolchain() {
+  if (runtimeMode !== "global" && runtimeMode !== "native" && hasHealthyAppRuntime()) {
+    const portableProbe = await probePortableNodeToolchain();
+    if (portableProbe.localNodeReady) return portableProbe;
+  }
+  const systemProbe = await probeNodeToolchain();
+  if (systemProbe.localNodeReady) return systemProbe;
+  if (runtimeMode === "global" || runtimeMode === "native") return systemProbe;
+  if (hasHealthyAppRuntime()) {
+    const portableProbe = await probePortableNodeToolchain();
+    if (portableProbe.localNodeReady) return portableProbe;
+  }
+  return systemProbe;
+}
+
 async function detectNativeRuntime() {
-  const nodeProbe = await probeNodeToolchain();
+  const nodeProbe = await probeStartupNodeToolchain();
   return {
     ...nodeProbe,
     installed: nodeProbe.localNodeReady,
   };
-}
-
-function systemNpxCacheRoots(nodeProbe = nativeRuntime) {
-  const roots = [];
-  if (nodeProbe && nodeProbe.npmCache) roots.push(path.join(nodeProbe.npmCache, "_npx"));
-  if (process.env.LOCALAPPDATA) roots.push(path.join(process.env.LOCALAPPDATA, "npm-cache", "_npx"));
-  if (RUNTIME_DIR) roots.push(path.join(RUNTIME_DIR, "npm-cache", "_npx"));
-  return [...new Set(roots.filter(Boolean))];
-}
-
-function inspectDshCache(root) {
-  try {
-    if (!root || !fs.existsSync(root)) {
-      return { root, ready: false, hit: null, version: null };
-    }
-    const entries = fs.readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory());
-    for (const entry of entries) {
-      const base = path.join(root, entry.name, "node_modules");
-      const candidates = [
-        path.join(base, "@deepseek-ai", "dsh", "package.json"),
-        path.join(base, "dsh", "package.json"),
-      ];
-      const pkgJson = candidates.find((candidate) => {
-        try {
-          return fs.existsSync(candidate);
-        } catch {
-          return false;
-        }
-      }) || null;
-      if (pkgJson) {
-        return {
-          root,
-          ready: true,
-          hit: entry.name,
-          version: readPackageVersion(pkgJson),
-        };
-      }
-    }
-    return {
-      root,
-      ready: false,
-      hit: null,
-      version: null,
-    };
-  } catch {
-    return { root, ready: false, hit: null, version: null };
-  }
-}
-
-function probeDshLaunchCache(nodeProbe = nativeRuntime) {
-  const roots = systemNpxCacheRoots(nodeProbe);
-  for (const root of roots) {
-    const cache = inspectDshCache(root);
-    if (cache.ready) return cache;
-  }
-  return { root: roots[0] || null, ready: false, hit: null, version: null };
-}
-
-function clearDshLaunchCaches(nodeProbe = nativeRuntime) {
-  const removed = [];
-  for (const root of systemNpxCacheRoots(nodeProbe)) {
-    const cache = inspectDshCache(root);
-    if (!cache.ready || !cache.hit) continue;
-    const target = path.resolve(root, cache.hit);
-    const rootResolved = path.resolve(root);
-    if (!target.toLowerCase().startsWith(rootResolved.toLowerCase() + path.sep)) {
-      log(`skip unsafe dsh cache path: ${target}`);
-      continue;
-    }
-    try {
-      fs.rmSync(target, { recursive: true, force: true });
-      removed.push(target);
-      log(`removed dsh npx cache: ${target}`);
-    } catch (error) {
-      log(`remove dsh npx cache failed: ${target}: ${error.message}`);
-    }
-  }
-  return removed;
 }
 
 async function probeNetworkSource() {
@@ -340,6 +322,7 @@ function loadBootChoice() {
     return {
       mode: parsed.mode,
       runtimeDir: typeof parsed.runtimeDir === "string" && parsed.runtimeDir.trim() !== "" ? parsed.runtimeDir.trim() : null,
+      dshRuntimeDir: typeof parsed.dshRuntimeDir === "string" && parsed.dshRuntimeDir.trim() !== "" ? parsed.dshRuntimeDir.trim() : null,
       dshVersion: typeof parsed.dshVersion === "string" && parsed.dshVersion.trim() !== "" ? parsed.dshVersion.trim() : null,
     };
   } catch {
@@ -351,6 +334,15 @@ function saveBootChoice(choice) {
     fs.mkdirSync(path.dirname(BOOT_FILE()), { recursive: true });
     fs.writeFileSync(BOOT_FILE(), `${JSON.stringify(choice, null, 2)}\n`);
   } catch { /* ignore */ }
+}
+function currentBootChoice(version = dshLaunchVersion) {
+  const mode = runtimeMode;
+  return {
+    mode,
+    runtimeDir: mode === "global" || mode === "native" ? null : RUNTIME_DIR,
+    dshRuntimeDir: DSH_RUNTIME_DIR ? managedDshRuntimeDir() : null,
+    dshVersion: version,
+  };
 }
 
 function logsDir() {
@@ -368,8 +360,8 @@ function log(line) {
 
 // ---------- 版本 ----------
 function bundledDshVersion() {
-  if (runtimeMode === "native" || runtimeMode === "global") return dshLaunchVersion;
-  return dshLaunchVersion;
+  const managed = probeManagedDshRuntime();
+  return managed.version || dshLaunchVersion;
 }
 
 // ---------- 单一实例 ----------
@@ -448,7 +440,8 @@ function nodeStepDetail(nodeProbe) {
   if (!nodeProbe || !nodeProbe.node) return "未检测到 Node";
   const pieces = [nodeProbe.node.raw];
   if (nodeProbe.npm) pieces.push(`npm ${nodeProbe.npm.raw}`);
-  if (nodeProbe.npx) pieces.push(`npx ${nodeProbe.npx.raw}`);
+  else pieces.push("未检测到 npm");
+  if (!nodeProbe.nodeCompatible) pieces.push(`需要 Node.js ${DSH_MIN_RUNTIME_NODE_MAJOR}+`);
   return pieces.join(" · ");
 }
 
@@ -483,7 +476,7 @@ function installBranchTitle(mode) {
 
 function readyStageText(mode) {
   if (mode === "native") return "本机环境已就绪，点击开始使用";
-  if (mode === "global") return "Node.js 环境已就绪，点击开始使用";
+  if (mode === "global") return "运行环境已就绪，点击开始使用";
   if (mode === "local-node") return "安装完成，可以开始使用";
   return "安装完成，可以开始使用";
 }
@@ -500,9 +493,10 @@ async function runStartupWizard(win) {
     detectComplete: false,
     native: null,
     network: null,
+    defaultDir: RUNTIME_DIR,
     installMode: "bundled",
     steps: [
-      detectStep("检测 Node.js 环境", "loading", "正在检查 Node.js、npm、npx"),
+      detectStep("检测 Node.js 环境", "loading", "正在检查 Node.js、npm"),
       detectStep("检测 DeepSeek Harness 环境", "idle", "等待上一步完成"),
       detectStep("检测当前网络状态", "idle", "等待上一步完成"),
     ],
@@ -519,15 +513,16 @@ async function runStartupWizard(win) {
       installed: false,
     },
     network: null,
+    defaultDir: RUNTIME_DIR,
     installMode: startupBranch({ ...nodeProbe, dshCache: null, installed: false }),
     steps: [
-      detectStep("检测 Node.js 环境", nodeProbe.node ? "success" : "fail", nodeStepDetail(nodeProbe)),
+      detectStep("检测 Node.js 环境", nodeProbe.localNodeReady ? "success" : "fail", nodeStepDetail(nodeProbe)),
       detectStep("检测 DeepSeek Harness 环境", "loading", "正在检查 DeepSeek Harness 环境"),
       detectStep("检测当前网络状态", "idle", "等待上一步完成"),
     ],
   });
 
-  const cacheProbe = probeDshLaunchCache(nodeProbe);
+  const dshProbe = probeManagedDshRuntime();
   if (!win || win.isDestroyed()) return;
   sendBoot(win, {
     page: "detect",
@@ -535,14 +530,15 @@ async function runStartupWizard(win) {
     detectComplete: false,
     native: {
       ...nodeProbe,
-      dshCache: cacheProbe,
+      dshCache: dshProbe,
       installed: false,
     },
     network: null,
-    installMode: startupBranch({ ...nodeProbe, dshCache: cacheProbe, installed: false }),
+    defaultDir: RUNTIME_DIR,
+    installMode: startupBranch({ ...nodeProbe, dshCache: dshProbe, installed: false }),
     steps: [
-      detectStep("检测 Node.js 环境", nodeProbe.node ? "success" : "fail", nodeStepDetail(nodeProbe)),
-      detectStep("检测 DeepSeek Harness 环境", cacheProbe.ready ? "success" : "fail", cacheStepDetail(cacheProbe)),
+      detectStep("检测 Node.js 环境", nodeProbe.localNodeReady ? "success" : "fail", nodeStepDetail(nodeProbe)),
+      detectStep("检测 DeepSeek Harness 环境", dshProbe.ready ? "success" : "fail", cacheStepDetail(dshProbe)),
       detectStep("检测当前网络状态", "loading", "正在检查下载源"),
     ],
   });
@@ -552,24 +548,26 @@ async function runStartupWizard(win) {
   const nativeProbe = {
     ...nodeProbe,
     installed: nodeProbe.localNodeReady,
-    dshCache: cacheProbe,
+    dshCache: dshProbe,
   };
   const branch = startupBranch(nativeProbe);
+  const readyToStart = nativeProbe.localNodeReady && dshProbe.ready;
   sendBoot(win, {
     page: "detect",
     stage: "检测完成",
     detectComplete: true,
     native: nativeProbe,
     network: networkProbe,
+    defaultDir: RUNTIME_DIR,
     installMode: branch,
-    nextPage: cacheProbe.ready ? "start" : "install",
+    nextPage: readyToStart ? "start" : "install",
     steps: [
-      detectStep("检测 Node.js 环境", nativeProbe.node ? "success" : "fail", nodeStepDetail(nativeProbe)),
-      detectStep("检测 DeepSeek Harness 环境", cacheProbe.ready ? "success" : "fail", cacheStepDetail(cacheProbe)),
+      detectStep("检测 Node.js 环境", nativeProbe.localNodeReady ? "success" : "fail", nodeStepDetail(nativeProbe)),
+      detectStep("检测 DeepSeek Harness 环境", dshProbe.ready ? "success" : "fail", cacheStepDetail(dshProbe)),
       detectStep("检测当前网络状态", networkProbe.ok ? "success" : "fail", networkStepDetail(networkProbe)),
     ],
   });
-  return { nodeProbe, cacheProbe, networkProbe, nativeProbe };
+  return { nodeProbe, cacheProbe: dshProbe, dshProbe, networkProbe, nativeProbe };
 }
 
 /** 带进度与重定向跟随的 HTTP(S) 下载。 */
@@ -659,6 +657,7 @@ function nativeNodeEnv(nodeProbe = nativeRuntime) {
   const env = {
     DSH_TELEMETRY_DISABLED: process.env.DSH_TELEMETRY_DISABLED || "",
     npm_config_update_notifier: "false",
+    npm_config_cache: managedNpmCacheDir(),
   };
   const pathParts = [];
   if (nodeProbe && nodeProbe.nodePath) pathParts.push(path.dirname(nodeProbe.nodePath));
@@ -703,89 +702,224 @@ async function installSystemNode(win) {
   return true;
 }
 
-/**
- * 通过官方 npx 路径预取 dsh。包被隔离在运行时自己的 npm 缓存中，Node/npm
- * 本体保持只读，因此安装中断不会让下次启动误判为“安装到一半”。
- */
-function warmDshWithNpx(win, version = dshLaunchVersion, registry = DEFAULT_REGISTRIES[0] ?? "https://registry.npmmirror.com") {
-  return new Promise((resolve) => {
-    const usableNative = (runtimeMode === "native" || runtimeMode === "global")
-      && nativeRuntime
-      && nativeRuntime.localNodeReady
-      && (nativeRuntime.npxPath || nativeRuntime.npxCliPath);
-    const usableBundled = hasHealthyAppRuntime();
-    if (!usableNative && !usableBundled) {
-      resolve(false);
-      return;
+function npmInstallCommand(nodeProbe = nativeRuntime) {
+  if (nodeProbe && nodeProbe.localNodeReady && nodeProbe.nodePath) {
+    if (nodeProbe.npmCliPath && fs.existsSync(nodeProbe.npmCliPath)) {
+      return {
+        command: nodeProbe.nodePath,
+        argsPrefix: [nodeProbe.npmCliPath],
+        env: nativeNodeEnv(nodeProbe),
+      };
     }
-    const launch = buildDshWebLaunch({ verbose: true, registry });
-    sendBoot(win, { page: "installing", installing: true, stage: "正在安装 DeepSeek Harness…", percent: 60 });
-    sendBootLog(win, "npx --verbose @deepseek-ai/dsh web");
-    const child = spawn(launch.command, launch.args, {
-      cwd: launch.cwd,
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: launch.env,
-      shell: false,
+    if (nodeProbe.npmPath) {
+      return {
+        command: nodeProbe.npmPath,
+        argsPrefix: [],
+        env: nativeNodeEnv(nodeProbe),
+        shell: /\.(cmd|bat)$/i.test(nodeProbe.npmPath),
+      };
+    }
+  }
+  if (hasHealthyAppRuntime()) {
+    return {
+      command: NODE_EXE,
+      argsPrefix: [NPM_CLI],
+      env: {
+        ...process.env,
+        PATH: [RUNTIME_DIR, process.env.PATH].filter(Boolean).join(path.delimiter),
+        npm_config_update_notifier: "false",
+        npm_config_cache: managedNpmCacheDir(),
+      },
+    };
+  }
+  return null;
+}
+
+function assertSafeManagedPath(target) {
+  const resolved = path.resolve(target);
+  const userData = path.resolve(app.getPath("userData"));
+  const runtime = RUNTIME_DIR ? path.resolve(RUNTIME_DIR) : null;
+  const allowed = resolved.toLowerCase().startsWith(userData.toLowerCase() + path.sep)
+    || (runtime && resolved.toLowerCase().startsWith(runtime.toLowerCase() + path.sep));
+  if (!allowed) throw new Error(`拒绝操作非托管目录：${resolved}`);
+  return resolved;
+}
+
+async function installManagedDsh(
+  win,
+  {
+    version = null,
+    registry = null,
+    baseDir = managedDshRuntimeDir(),
+    keepBackup = false,
+  } = {}
+) {
+  const npm = npmInstallCommand(nativeRuntime);
+  if (!npm) {
+    sendBootLog(win, "未检测到可用 npm，无法安装 DeepSeek Harness");
+    return false;
+  }
+
+  // 未显式指定版本 → 安装官方最新版本（dist-tags 中 semver 最高者，如 0.1.0-rc.8），
+  // 而不是固定在 0.1.0-rc.7；解析失败才回退到 latest 标签。
+  if (!version) {
+    const newest = await latestDshVersion();
+    if (newest && newest.version) {
+      version = newest.version;
+      if (newest.registry) registry = newest.registry;
+    } else {
+      version = "latest";
+    }
+    sendBootLog(win, `将安装 DeepSeek Harness 最新版本：${version}`);
+  }
+
+  const target = assertSafeManagedPath(baseDir);
+  const staging = assertSafeManagedPath(`${target}-staging`);
+  const backup = assertSafeManagedPath(`${target}-backup-${Date.now()}`);
+  const spec = `@deepseek-ai/dsh@${version || "latest"}`;
+  let progress = 0;
+  let stalled = false;
+  let lastActivityAt = Date.now();
+  let tail = "";
+  let backupCreated = false;
+  let creep = null;
+  let stallTimer = null;
+
+  const setStage = (stage, percent = progress) => {
+    sendBoot(win, {
+      page: "installing",
+      installing: true,
+      stage,
+      percent,
+      installMode: "global",
+      detectComplete: true,
     });
-    let tail = "";
-    let progress = 60;
-    let readyPort = null;
-    let done = false;
-    let stalled = false;
-    let lastActivityAt = Date.now();
-    const creep = setInterval(() => {
-      progress = Math.min(90, progress + 1);
-      sendBoot(win, { page: "installing", installing: true, stage: stalled ? "正在解析安装包，请耐心等待…" : "正在安装 DeepSeek Harness…", percent: progress });
+  };
+
+  try {
+    fs.rmSync(staging, { recursive: true, force: true });
+    fs.mkdirSync(staging, { recursive: true });
+    setStage("正在安装 DeepSeek Harness…", 0);
+    sendBootLog(win, `npm install --prefix "${staging}" ${spec} --registry=${registry || DEFAULT_REGISTRIES[0] || "https://registry.npmmirror.com"} --package-lock=false --prefer-offline`);
+
+    creep = setInterval(() => {
+      progress = Math.min(92, progress + 1);
+      setStage(stalled ? "正在解析安装包，请耐心等待…" : "正在安装 DeepSeek Harness…", progress);
     }, 900);
-    const stallTimer = setInterval(() => {
-      if (done || child.exitCode !== null || readyPort !== null) return;
+    stallTimer = setInterval(() => {
       if (Date.now() - lastActivityAt >= 15_000 && !stalled) {
         stalled = true;
-        sendBoot(win, { page: "installing", installing: true, stage: "正在解析安装包，请耐心等待…", percent: progress });
+        setStage("正在解析安装包，请耐心等待…", progress);
       }
     }, 1000);
-    const write = (chunk) => {
-      const text = chunk.toString();
-      lastActivityAt = Date.now();
-      tail = (tail + text).slice(-4000);
-      for (const rawLine of text.split(/\r?\n/)) {
-        const line = rawLine.replace(/\r/g, "").trim();
-        if (line) sendBootLog(win, line);
-      }
-      const match = text.match(/(?:dsh web: )?https?:\/\/(?:127\.0\.0\.1|localhost):(\d+)/i);
-      if (match && readyPort === null) readyPort = Number(match[1]);
+
+    const installArgs = [
+      ...npm.argsPrefix,
+      "install",
+      "--prefix", staging,
+      `--registry=${registry || DEFAULT_REGISTRIES[0] || "https://registry.npmmirror.com"}`,
+      "--loglevel=verbose",
+      "--no-audit",
+      "--no-fund",
+      "--package-lock=false",
+      "--prefer-offline",
+      spec,
+    ];
+    const result = await runLoggedCommand(npm.command, installArgs, {
+      cwd: app.getPath("userData"),
+      shell: !!npm.shell,
+      env: npm.env,
+      onLine: (line) => {
+        lastActivityAt = Date.now();
+        if (stalled) {
+          stalled = false;
+          setStage("正在安装 DeepSeek Harness…", progress);
+        }
+        tail = (tail + line + "\n").slice(-6000);
+        sendBootLog(win, line);
+      },
+    });
+
+    clearInterval(creep);
+    clearInterval(stallTimer);
+    creep = null;
+    stallTimer = null;
+
+    if (result.code !== 0) {
+      sendBootLog(win, `DeepSeek Harness 安装失败（退出码 ${result.code}）${result.tail ? `：${result.tail.slice(-700)}` : ""}`);
+      fs.rmSync(staging, { recursive: true, force: true });
+      return false;
+    }
+
+    const probe = probeManagedDshRuntime(staging);
+    if (!probe.ready) {
+      sendBootLog(win, `DeepSeek Harness 安装校验失败：未找到 ${managedDshBinPath(staging)}`);
+      fs.rmSync(staging, { recursive: true, force: true });
+      return false;
+    }
+
+    setStage("正在切换 DeepSeek Harness…", 96);
+    if (fs.existsSync(target)) {
+      fs.renameSync(target, backup);
+      backupCreated = true;
+    }
+    fs.renameSync(staging, target);
+    if (backupCreated && !keepBackup) {
+      try { fs.rmSync(backup, { recursive: true, force: true }); } catch (cleanupError) { log(`cleanup old managed dsh failed: ${cleanupError.message}`); }
+    }
+
+    const installed = probeManagedDshRuntime(target);
+    dshLaunchVersion = installed.version || version || dshLaunchVersion;
+    sendBootLog(win, `DeepSeek Harness 安装完成：${dshLaunchVersion}`);
+    setStage("DeepSeek Harness 已就绪…", 100);
+    return {
+      ok: true,
+      version: dshLaunchVersion,
+      target,
+      backup: backupCreated ? backup : null,
     };
-    child.stdout.on("data", write);
-    child.stderr.on("data", write);
-    const timer = setTimeout(() => {
-      try { child.kill(); } catch { /* ignore */ }
-    }, 15 * 60_000);
-    child.on("error", () => {
-      clearTimeout(timer);
-      clearInterval(creep);
-      clearInterval(stallTimer);
-      resolve(false);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      clearInterval(creep);
-      clearInterval(stallTimer);
-      if (code !== 0 && readyPort === null) {
-        sendBootLog(win, `dsh 启动失败（退出码 ${code}）：${tail.slice(-600)}`);
-        resolve(false);
-        return;
-      }
-      done = true;
-      sendBoot(win, { page: "installing", installing: true, stage: "DeepSeek Harness 已就绪…", percent: 92 });
-      sendBootLog(win, "DeepSeek Harness 已通过官方 npx 准备完成");
-      resolve(true);
-    });
-  });
+  } catch (error) {
+    if (creep) clearInterval(creep);
+    if (stallTimer) clearInterval(stallTimer);
+    const message = error instanceof Error ? error.message : String(error);
+    sendBootLog(win, `DeepSeek Harness 安装异常：${message}${tail ? `\n${tail.slice(-700)}` : ""}`);
+    try { fs.rmSync(staging, { recursive: true, force: true }); } catch { /* ignore */ }
+    if (backupCreated && !fs.existsSync(target) && fs.existsSync(backup)) {
+      try { fs.renameSync(backup, target); } catch (restoreError) { log(`restore managed dsh failed: ${restoreError.message}`); }
+    }
+    return false;
+  }
+}
+
+function cleanupManagedDshBackup(installResult) {
+  if (!installResult || !installResult.backup) return;
+  try {
+    const backup = assertSafeManagedPath(installResult.backup);
+    fs.rmSync(backup, { recursive: true, force: true });
+  } catch (error) {
+    log(`cleanup managed dsh backup failed: ${error.message}`);
+  }
+}
+
+function restoreManagedDshBackup(installResult) {
+  if (!installResult || !installResult.backup || !installResult.target) return false;
+  try {
+    const target = assertSafeManagedPath(installResult.target);
+    const backup = assertSafeManagedPath(installResult.backup);
+    if (!fs.existsSync(backup)) return false;
+    const failed = assertSafeManagedPath(`${target}-failed-${Date.now()}`);
+    if (fs.existsSync(target)) fs.renameSync(target, failed);
+    fs.renameSync(backup, target);
+    try { fs.rmSync(failed, { recursive: true, force: true }); } catch (cleanupError) { log(`cleanup failed managed dsh failed: ${cleanupError.message}`); }
+    return true;
+  } catch (error) {
+    log(`restore managed dsh backup failed: ${error.message}`);
+    return false;
+  }
 }
 
 async function ensurePortableRuntime(win) {
-  if (hasHealthyAppRuntime()) return warmDshWithNpx(win);
+  if (hasHealthyAppRuntime()) return installManagedDsh(win);
   sendBoot(win, {
     page: "installing",
     installing: true,
@@ -840,9 +974,7 @@ async function ensurePortableRuntime(win) {
       sendBootLog(win, `Node.js 已就绪：${NODE_EXE}`);
     }
     if (!hasHealthyNpmRuntime()) throw new Error("Node.js 自带 npm 未能正确恢复");
-    // dsh 只交给官方 npx 缓存，不再写入 Node 的 node_modules。
-    // 这样不会因 dsh 的依赖安装或更新中断而损坏 npm 自身。
-    if (!(await warmDshWithNpx(win))) return false;
+    if (!(await installManagedDsh(win))) return false;
     sendBootLog(win, "运行时安装完成");
     return true;
   } catch (error) {
@@ -864,12 +996,12 @@ async function ensureGlobalRuntime(win) {
     nativeRuntime = await detectNativeRuntime();
   }
   if (!nativeRuntime.localNodeReady) {
-    sendBootLog(win, "Node.js、npm 或 npx 未能正确安装");
+    sendBootLog(win, "Node.js 或 npm 未能正确安装");
     return false;
   }
-  sendBoot(win, { page: "installing", installing: true, stage: "Node.js 环境已就绪…", percent: 92 });
-  sendBootLog(win, "Node.js、npm、npx 已就绪");
-  return true;
+  sendBoot(win, { page: "installing", installing: true, stage: "Node.js 环境已就绪…", percent: 0 });
+  sendBootLog(win, "Node.js、npm 已就绪");
+  return installManagedDsh(win);
 }
 
 async function ensureRuntime(win) {
@@ -915,16 +1047,18 @@ function syncBundledDamagePulse() {
   log(`bundled damage-pulse synced to ${target}`);
 }
 
-function buildDshWebLaunch({ verbose = false, registry = DEFAULT_REGISTRIES[0] ?? "https://registry.npmmirror.com" } = {}) {
+function buildDshWebLaunch() {
   const useNativeNode = (runtimeMode === "native" || runtimeMode === "global")
     && nativeRuntime
+    && nativeRuntime.localNodeReady
     && nativeRuntime.nodePath
-    && nativeRuntime.npxCliPath
-    && fs.existsSync(nativeRuntime.nodePath)
-    && fs.existsSync(nativeRuntime.npxCliPath);
+    && fs.existsSync(nativeRuntime.nodePath);
   const command = useNativeNode ? nativeRuntime.nodePath : NODE_EXE;
-  const npxCli = useNativeNode ? nativeRuntime.npxCliPath : NPX_CLI;
-  const cwd = useNativeNode ? app.getPath("userData") : RUNTIME_DIR;
+  const cwd = app.getPath("userData");
+  const dshProbe = probeManagedDshRuntime();
+  if (!dshProbe.ready) {
+    throw new Error("DeepSeek Harness 托管运行槽未就绪，请先安装");
+  }
   const env = {
     ...process.env,
     DSH_TELEMETRY_DISABLED: process.env.DSH_TELEMETRY_DISABLED || "",
@@ -938,20 +1072,16 @@ function buildDshWebLaunch({ verbose = false, registry = DEFAULT_REGISTRIES[0] ?
     if (process.env.PATH) pathParts.push(process.env.PATH);
     env.PATH = pathParts.filter(Boolean).join(path.delimiter);
     if (nativeRuntime.npmPrefix) env.npm_config_prefix = nativeRuntime.npmPrefix;
-  } else {
-    env.npm_config_cache = npxCacheDir();
   }
   return {
     command,
     args: [
-      npxCli,
-      "--yes",
-      ...(verbose ? ["--verbose"] : []),
-      `--registry=${registry}`,
-      "@deepseek-ai/dsh",
+      dshProbe.binPath,
       "web",
       "--patch", DAMAGE_PULSE_PATCH,
       "--port", "0",
+      // 桌面版自带界面，不需要 dsh web 再拉起系统默认浏览器
+      "--no-open",
     ],
     cwd,
     env,
@@ -959,7 +1089,8 @@ function buildDshWebLaunch({ verbose = false, registry = DEFAULT_REGISTRIES[0] ?
 }
 
 /** 启动 dsh web 服务器；返回其监听端口。 */
-async function startServer(win, { verbose = false } = {}) {
+async function startServer(win, options = {}) {
+  const { verbose = false, readyBeforeLoad = false } = options;
   sendBoot(win, {
     page: verbose ? "installing" : "booting",
     installing: verbose,
@@ -974,10 +1105,27 @@ async function startServer(win, { verbose = false } = {}) {
   });
   syncBundledDamagePulse();
   const logPath = SERVER_LOG();
-  const launch = buildDshWebLaunch({ verbose });
+  let launch;
+  try {
+    launch = buildDshWebLaunch();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendBootLog(win, message);
+    sendBoot(win, {
+      page: "location",
+      installing: false,
+      stage: "请先安装 DeepSeek Harness",
+      percent: 0,
+      native: nativeRuntime,
+      detectComplete: true,
+      installMode: "global",
+    });
+    return null;
+  }
   const statusPage = verbose ? "installing" : "booting";
+  const uiFlow = verbose || readyBeforeLoad;
   log(`starting server: ${launch.command} ${launch.args.join(" ")}`);
-  if (verbose) sendBootLog(win, "npx --verbose @deepseek-ai/dsh web");
+  if (verbose) sendBootLog(win, `node "${launch.args[0]}" web`);
   const child = spawn(launch.command, launch.args, {
     cwd: launch.cwd,
     env: launch.env,
@@ -1057,13 +1205,13 @@ async function startServer(win, { verbose = false } = {}) {
     stopStallTimer();
     log(`server exited code=${code} signal=${signal} quitting=${quitting} stopping=${serverStopping}`);
     if (!quitting && !serverStopping) {
-      if (verbose) {
+      if (uiFlow) {
         sendBootLog(win, `DeepSeek Harness 启动失败（退出码 ${code ?? "unknown"}）`);
         sendBoot(win, {
           page: "installing",
           installing: false,
           installError: true,
-          stage: "安装失败，请检查网络后重试",
+          stage: "启动失败，请检查日志后重试",
           percent: verboseProgress,
           installMode: "global",
         });
@@ -1094,19 +1242,19 @@ async function startServer(win, { verbose = false } = {}) {
 
   // 启动失败：先清理子进程
   stopStallTimer();
-  if (verbose) {
+  if (uiFlow) {
     serverStopping = true;
     killServerTree();
     const reason =
       port === null
-        ? "安装超时，未能获得监听端口。"
+        ? `${verbose ? "安装" : "启动"}超时，未能获得监听端口。`
         : `服务就绪超时（http://127.0.0.1:${port} 无响应）。`;
     sendBootLog(win, reason);
     sendBoot(win, {
       page: "installing",
       installing: false,
       installError: true,
-      stage: "安装失败，请检查网络后重试",
+      stage: "启动失败，请检查日志后重试",
       percent: verboseProgress,
       installMode: "global",
     });
@@ -1199,11 +1347,11 @@ function compareVersions(a, b) {
   }
 }
 
-async function fetchJson(url, timeoutMs = 10_000) {
+async function fetchJson(url, timeoutMs = 10_000, accept = "application/json") {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { signal: controller.signal, headers: { accept: "application/json" } });
+    const res = await fetch(url, { signal: controller.signal, headers: { accept } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } finally {
@@ -1211,14 +1359,46 @@ async function fetchJson(url, timeoutMs = 10_000) {
   }
 }
 
-/** 查询官方最新版本（按 registry 顺序回退）。 */
+/**
+ * 查询官方最新版本（按 registry 顺序回退）。
+ * 不能只看 `latest` dist-tag：官方把 rc 版本发布在 `next` 标签下
+ * （如 latest=0.1.0-rc.7 而 next=0.1.0-rc.8），因此取全部 dist-tags
+ * 与已发布版本中 semver 最高的那个作为"最新版本"。
+ */
 async function latestDshVersion() {
   for (const registry of DEFAULT_REGISTRIES) {
     try {
-      const data = await fetchJson(`${registry}/@deepseek-ai/dsh/latest`);
-      if (data && typeof data.version === "string") return { version: data.version, registry };
+      const data = await fetchJson(
+        `${registry}/@deepseek-ai/dsh`,
+        8000,
+        "application/vnd.npm.install-v1+json"
+      );
+      if (data && typeof data === "object") {
+        const candidates = new Set();
+        if (data["dist-tags"] && typeof data["dist-tags"] === "object") {
+          for (const tag of Object.values(data["dist-tags"])) {
+            if (typeof tag === "string" && tag.trim() !== "") candidates.add(tag.trim());
+          }
+        }
+        if (data.versions && typeof data.versions === "object") {
+          for (const version of Object.keys(data.versions)) {
+            if (version.trim() !== "") candidates.add(version.trim());
+          }
+        }
+        let best = null;
+        for (const candidate of candidates) {
+          if (!best || compareVersions(candidate, best) > 0) best = candidate;
+        }
+        if (best) return { version: best, registry };
+      }
     } catch (err) {
-      log(`registry ${registry} failed: ${err.message}`);
+      log(`registry ${registry} packument failed: ${err.message}`);
+    }
+    try {
+      const latest = await fetchJson(`${registry}/@deepseek-ai/dsh/latest`, 4500);
+      if (latest && typeof latest.version === "string") return { version: latest.version, registry };
+    } catch (err) {
+      log(`registry ${registry} latest failed: ${err.message}`);
     }
   }
   return null;
@@ -1387,36 +1567,57 @@ async function performUpdate(win, { silent = false } = {}) {
       const previousMode = runtimeMode;
       setRuntimeMode("global");
       nativeRuntime = await probeNodeToolchain();
-      clearDshLaunchCaches(nativeRuntime);
-      const newPort = await startServer(win, { verbose: true });
+      const installResult = await installManagedDsh(win, { version: latest.version, registry: latest.registry, keepBackup: true });
+      setRuntimeMode(previousMode);
+      const newPort = installResult ? await startServer(win, { readyBeforeLoad: true }) : null;
       if (newPort !== null) {
         dshLaunchVersion = latest.version;
-        saveBootChoice({ mode: "global", runtimeDir: null, dshVersion: dshLaunchVersion });
+        saveBootChoice(currentBootChoice(dshLaunchVersion));
         pendingBootUrl = `http://127.0.0.1:${newPort}`;
+        cleanupManagedDshBackup(installResult);
         break;
       }
+      const restoredFiles = restoreManagedDshBackup(installResult);
+      if (restoredFiles) {
+        dshLaunchVersion = current;
+        sendBootLog(win, "已恢复更新前的 DeepSeek Harness 版本");
+      }
       // 失败：用旧版本重启服务器，恢复可用状态；弹窗提示（不刷新页面，避免丢失弹窗）
+      let restoredPort = null;
       try {
         setRuntimeMode(previousMode);
-        await startServer(win);
+        restoredPort = await startServer(win, { readyBeforeLoad: true });
       } catch { /* ignore */ }
+      const recovered = restoredPort !== null;
+      if (recovered) {
+        pendingBootUrl = `http://127.0.0.1:${restoredPort}`;
+        sendBootLog(win, "旧版本服务已重新启动");
+      }
       sendStatus(win, { state: "idle", current });
       sendEvent(win, {
         type: "update-failed",
         current,
         latest: latest.version,
-        detail: "通过官方 npx 下载 DeepSeek Harness 失败，请检查网络后重试。",
+        restored: recovered,
+        detail: recovered
+          ? "通过 npm 安装 DeepSeek Harness 失败，已恢复旧版本运行。"
+          : "通过 npm 安装 DeepSeek Harness 失败，旧版本服务未能重新启动，请检查日志。",
       });
       const action = await waitForUpdateAction(win);
       if (action !== "retry") {
         sendEvent(win, { type: "close" });
         // 关闭后刷新页面，重新连接已恢复的服务器
-        if (!win.isDestroyed()) win.loadURL(win.webContents.getURL());
+        if (!win.isDestroyed()) {
+          const target = pendingBootUrl || win.webContents.getURL();
+          pendingBootUrl = null;
+          win.loadURL(target);
+        }
         return;
       }
+      pendingBootUrl = null;
     }
 
-    // ---- 成功：npx 已用新版拉起服务，无需重启整个应用 ----
+    // ---- 成功：新版已安装并拉起服务，无需重启整个应用 ----
     sendStatus(win, { state: "idle", current: latest.version });
     // 先挂等就绪监听，再刷新页面连接新服务器，等 preload 就绪后弹成功窗
     const ready = waitForRendererReady(win);
@@ -1537,13 +1738,13 @@ function registerIpc() {
     electron: process.versions.electron,
     node: process.versions.node,
     runtime: RUNTIME_DIR,
+    dshRuntime: managedDshRuntimeDir(),
     mode: runtimeMode,
     native: nativeRuntime ? {
       installed: nativeRuntime.localNodeReady,
       node: nativeRuntime.node ? nativeRuntime.node.raw : null,
       npm: nativeRuntime.npm ? nativeRuntime.npm.raw : null,
-      npx: nativeRuntime.npx ? nativeRuntime.npx.raw : null,
-      dsh: null,
+      dsh: probeManagedDshRuntime().version || null,
     } : null,
   }));
   // 启动画面主题：主界面报告主题 → 持久化（供下次启动页跟随）并恢复毛玻璃透明底
@@ -1581,20 +1782,22 @@ function registerIpc() {
     if (!win) return;
     const request = dir && typeof dir === "object" ? dir : { mode: "custom", dir };
     const requestedMode = request.mode === "global" ? "global" : "custom";
-    // 安装版始终使用应用管理的 Node + npx；本机 Node 只在用户明确选择
-    // “使用本机环境”且本机已经具备 dsh 时使用。
+    // 安装版始终使用软件托管的 npm 安装槽；本机 Node 只作为 npm/node 执行器。
     const mode = requestedMode === "global" ? "global" : "bundled";
     if (requestedMode === "global") {
       try {
         setRuntimeMode("global");
+        setDshRuntimeDir(null);
         if (!nativeRuntime || !nativeRuntime.localNodeReady) {
           const installed = await installSystemNode(win);
           if (!installed) throw new Error("Node.js 环境准备失败");
           nativeRuntime = await probeNodeToolchain();
         }
         if (!nativeRuntime || !nativeRuntime.localNodeReady) throw new Error("Node.js 环境准备失败");
-        saveBootChoice({ mode: "global", runtimeDir: null, dshVersion: dshLaunchVersion });
-        await bootServer(win, { verbose: !probeDshLaunchCache(nativeRuntime).ready, readyBeforeLoad: true });
+        const ok = await ensureGlobalRuntime(win);
+        if (!ok) throw new Error("DeepSeek Harness 安装失败");
+        saveBootChoice(currentBootChoice(dshLaunchVersion));
+        await bootServer(win, { readyBeforeLoad: true });
       } catch (error) {
         sendBootLog(win, `全局安装失败：${error instanceof Error ? error.message : String(error)}`);
         sendBoot(win, { page: "installing", installing: false, installError: true, stage: "安装失败，请检查网络后重试", percent: 0, native: nativeRuntime, detectComplete: true, installMode: "global" });
@@ -1612,6 +1815,7 @@ function registerIpc() {
       return;
     }
     setRuntimeDir(target);
+    setDshRuntimeDir(path.join(target, "dsh-runtime"));
     log(`runtime install target: ${target}`);
     try {
       const ok = await ensureRuntime(win);
@@ -1620,17 +1824,8 @@ function registerIpc() {
         sendBoot(win, { page: "installing", installing: false, installError: true, stage: "安装失败，请检查网络后重试", percent: 0, defaultDir: RUNTIME_DIR, native: nativeRuntime, detectComplete: true, installMode: mode });
         return;
       }
-      saveBootChoice({ mode, runtimeDir: target, dshVersion: dshLaunchVersion });
-      sendBoot(win, {
-        page: "ready",
-        stage: readyStageText(mode),
-        percent: 100,
-        primaryAction: "start",
-        installMode: mode,
-        defaultDir: target,
-        native: nativeRuntime,
-        detectComplete: true,
-      });
+      saveBootChoice(currentBootChoice(dshLaunchVersion));
+      await bootServer(win, { readyBeforeLoad: true });
     } catch (error) {
       log(`runtime install flow error: ${error && error.message ? error.message : String(error)}`);
       sendBootLog(win, `安装异常：${error && error.message ? error.message : String(error)}`);
@@ -1642,12 +1837,12 @@ function registerIpc() {
     if (!win || typeof choice !== "string") return;
     if (choice === "native") {
       if (!nativeRuntime || !nativeRuntime.localNodeReady) {
-        sendBootLog(win, "本机 Node/npm/npx 环境不可用，请先安装 Node");
+        sendBootLog(win, "本机 Node.js/npm 环境不可用，请先安装 Node");
         sendBoot(win, { page: "detect", installing: false, stage: "未检测到可用本机环境", percent: 0, defaultDir: RUNTIME_DIR, native: nativeRuntime, detectComplete: true });
         return;
       }
-      saveBootChoice({ mode: "native", runtimeDir: null });
       setRuntimeMode("native");
+      saveBootChoice(currentBootChoice(dshLaunchVersion));
       sendBoot(win, {
         page: "ready",
         stage: readyStageText("native"),
@@ -1660,14 +1855,16 @@ function registerIpc() {
     if (choice === "install") {
       try {
         setRuntimeMode("global");
+        setDshRuntimeDir(null);
         if (!nativeRuntime || !nativeRuntime.localNodeReady) {
           const installed = await installSystemNode(win);
           if (!installed) throw new Error("Node.js 环境准备失败");
           nativeRuntime = await probeNodeToolchain();
         }
-        const cacheReady = probeDshLaunchCache(nativeRuntime).ready;
-        saveBootChoice({ mode: "global", runtimeDir: null, dshVersion: dshLaunchVersion });
-        await bootServer(win, { verbose: !cacheReady, readyBeforeLoad: !cacheReady });
+        const ok = await ensureGlobalRuntime(win);
+        if (!ok) throw new Error("DeepSeek Harness 安装失败");
+        saveBootChoice(currentBootChoice(dshLaunchVersion));
+        await bootServer(win, { readyBeforeLoad: true });
       } catch (error) {
         sendBootLog(win, `全局安装失败：${error instanceof Error ? error.message : String(error)}`);
         sendBoot(win, { page: "installing", installing: false, installError: true, stage: "安装失败，请检查网络后重试", percent: 0, native: nativeRuntime, detectComplete: true, installMode: "global" });
@@ -1683,11 +1880,18 @@ function registerIpc() {
           return;
         }
         if ((runtimeMode === "native" || runtimeMode === "global") && (!nativeRuntime || !nativeRuntime.localNodeReady)) {
-          sendBootLog(win, "本机 Node/npm/npx 环境不可用，请先安装 Node");
+          sendBootLog(win, "本机 Node.js/npm 环境不可用，请先安装 Node");
           sendBoot(win, { page: "detect", installing: false, stage: "未检测到可用本机环境", percent: 0, defaultDir: RUNTIME_DIR, native: nativeRuntime, detectComplete: true });
           return;
         }
-        await bootServer(win, { verbose: !probeDshLaunchCache(nativeRuntime).ready });
+        const dshProbe = probeManagedDshRuntime();
+        if (!dshProbe.ready) {
+          sendBootLog(win, "未检测到 DeepSeek Harness 环境，请先安装");
+          sendBoot(win, { page: "location", installing: false, stage: "请先安装 DeepSeek Harness", percent: 0, defaultDir: RUNTIME_DIR, native: nativeRuntime, detectComplete: true, installMode: "global" });
+          return;
+        }
+        dshLaunchVersion = dshProbe.version || dshLaunchVersion;
+        await bootServer(win);
       } catch (error) {
         log(`native boot failed: ${error && error.message ? error.message : String(error)}`);
         sendBootLog(win, `本机启动失败：${error && error.message ? error.message : String(error)}`);
@@ -1718,24 +1922,58 @@ app.whenReady().then(async () => {
   loadSplashTheme();
 
   const savedBoot = loadBootChoice();
+  if (savedBoot && savedBoot.dshVersion) dshLaunchVersion = savedBoot.dshVersion;
   setRuntimeDir(savedBoot && savedBoot.runtimeDir ? savedBoot.runtimeDir : defaultRuntimeDir());
+  setDshRuntimeDir(savedBoot && savedBoot.dshRuntimeDir ? savedBoot.dshRuntimeDir : null);
+  setRuntimeMode(savedBoot && savedBoot.mode ? savedBoot.mode : "global");
   log(`runtime dir: ${RUNTIME_DIR}`);
+  log(`dsh runtime dir: ${managedDshRuntimeDir()}`);
 
   // 双击后立即开窗：启动页（logo/状态/进度条）马上渲染，检测等其余工作在后台并行
   const splashUrl = pathToFileURL(path.join(__dirname, "assets", "splash.html")).href;
-  const win = createWindow(splashUrl, null);
+  const win = createWindow(splashUrl, savedBoot);
 
-  nativeRuntime = await probeNodeToolchain();
-  log(`native runtime: node=${nativeRuntime && nativeRuntime.node ? nativeRuntime.node.raw : "missing"}, npm=${nativeRuntime && nativeRuntime.npm ? nativeRuntime.npm.raw : "missing"}, npx=${nativeRuntime && nativeRuntime.npx ? nativeRuntime.npx.raw : "missing"}, cache=${nativeRuntime && nativeRuntime.npmCache ? nativeRuntime.npmCache : "missing"}`);
+  nativeRuntime = await probeStartupNodeToolchain();
+  log(`native runtime: node=${nativeRuntime && nativeRuntime.node ? nativeRuntime.node.raw : "missing"}, npm=${nativeRuntime && nativeRuntime.npm ? nativeRuntime.npm.raw : "missing"}, dsh=${probeManagedDshRuntime().version || "missing"}`);
+
+  const dshProbe = probeManagedDshRuntime();
+
+  // 已安装过（boot.json 存在且托管 dsh 就绪）：跳过环境检测向导，
+  // 启动页直接进入"正在启动"视图并拉起服务；只有首次运行（或环境异常需要重装）才走检测向导。
+  if (savedBoot && dshProbe.ready) {
+    const nativeOk = !!(nativeRuntime && nativeRuntime.localNodeReady);
+    const portableOk = hasHealthyAppRuntime();
+    const bootable = (runtimeMode === "global" || runtimeMode === "native") ? (nativeOk || portableOk) : portableOk;
+    if (bootable) {
+      log("saved boot choice found, skipping detection wizard");
+      sendBoot(win, {
+        page: "booting",
+        stage: runtimeMode === "global" || runtimeMode === "native"
+          ? "正在启动 DeepSeek Harness 服务…"
+          : "正在启动…",
+        percent: 90,
+      });
+      await bootServer(win);
+      return;
+    }
+    // 运行槽存在但 node/npm 缺失（目录被移动/删除等）：回落到检测向导，引导修复/重装
+    log("saved boot choice found but runtime missing, falling back to detection wizard");
+  }
 
   const startup = await runStartupWizard(win);
   if (!startup || win.isDestroyed()) return;
 
   nativeRuntime = startup.nodeProbe;
-  setRuntimeMode("global");
+  const rememberedMode = savedBoot && savedBoot.mode ? savedBoot.mode : runtimeMode;
 
-  const launchVersion = startup.cacheProbe && startup.cacheProbe.version ? startup.cacheProbe.version : dshLaunchVersion;
-  saveBootChoice({ mode: "global", runtimeDir: null, dshVersion: launchVersion });
+  const launchVersion = startup.dshProbe && startup.dshProbe.version ? startup.dshProbe.version : dshLaunchVersion;
+  dshLaunchVersion = launchVersion;
+  saveBootChoice({
+    mode: rememberedMode,
+    runtimeDir: savedBoot && savedBoot.runtimeDir ? savedBoot.runtimeDir : null,
+    dshRuntimeDir: savedBoot && savedBoot.dshRuntimeDir ? savedBoot.dshRuntimeDir : null,
+    dshVersion: launchVersion,
+  });
 });
 
 /** 起服务并把窗口导航到主界面（含更新静默检查）。 */
