@@ -1527,7 +1527,7 @@ html.dsh-splash-theme-light #dsh-splash { background: #000; }
 }
 #dsh-splash-track {
   display: flex;
-  width: 500%;
+  width: 400%;
   will-change: transform;
   backface-visibility: hidden;
   transform: translateX(0%);
@@ -1535,8 +1535,8 @@ html.dsh-splash-theme-light #dsh-splash { background: #000; }
 }
 .dsh-splash-page {
   box-sizing: border-box;
-  width: 20%;
-  flex: 0 0 20%;
+  width: 25%;
+  flex: 0 0 25%;
   min-height: 360px;
   padding: 26px 34px 20px;
   display: flex;
@@ -1545,6 +1545,7 @@ html.dsh-splash-theme-light #dsh-splash { background: #000; }
 }
 .dsh-splash-page-head { display: flex; flex-direction: column; align-items: center; gap: 6px; }
 .dsh-splash-page-title {
+  position: relative;
   width: 100%;
   text-align: center;
   font-size: 21px;
@@ -2005,7 +2006,6 @@ html.dsh-splash-theme-light .dsh-splash-global-pill {
 
 /* 启动页只保留必要信息；状态细节和辅助文案不参与布局。 */
 .dsh-splash-page-sub,
-.dsh-splash-step-detail,
 .dsh-splash-next-label { display: none !important; }
 
 /* 仅服务启动阶段显示的随机生产力文案。 */
@@ -2025,6 +2025,32 @@ html.dsh-splash-theme-light .dsh-splash-global-pill {
 @keyframes dsh-splash-boot-message-in {
   from { opacity: 0; transform: translateY(-3px); }
   to { opacity: 1; transform: translateY(0); }
+}
+.dsh-splash-parsing-dots {
+  display: inline-flex;
+  align-items: center;
+  width: 26px;
+  position: absolute;
+  left: calc(50% + 78px);
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: 0;
+  color: #f6d36a;
+}
+.dsh-splash-title-main {
+  display: inline-block;
+  width: 100%;
+  text-align: center;
+}
+.dsh-splash-parsing-dots span {
+  opacity: .24;
+  animation: dsh-splash-parsing-dot 1.05s ease-in-out infinite;
+}
+.dsh-splash-parsing-dots span:nth-child(2) { animation-delay: .16s; }
+.dsh-splash-parsing-dots span:nth-child(3) { animation-delay: .32s; }
+@keyframes dsh-splash-parsing-dot {
+  0%, 100% { opacity: .18; text-shadow: none; }
+  45% { opacity: 1; text-shadow: 0 0 10px rgba(246, 211, 106, .9); }
 }
 
 /* 勾叉以圆心为基准绘制，避免视觉偏上或偏左。 */
@@ -2156,7 +2182,7 @@ function initSplash() {
           <section class="dsh-splash-page" data-page="detect">
             <div class="dsh-splash-page-head">
               <div class="dsh-splash-page-title">环境检测</div>
-              <div class="dsh-splash-page-sub">正在检查本机 Node.js、DeepSeek Harness 和网络状态。</div>
+              <div class="dsh-splash-page-sub">正在检查本机 Node.js 和网络状态。</div>
             </div>
             <div class="dsh-splash-step-list">
               <div class="dsh-splash-step" data-step="0">
@@ -2167,13 +2193,6 @@ function initSplash() {
                 </div>
               </div>
               <div class="dsh-splash-step" data-step="1">
-                <div class="dsh-splash-step-icon"></div>
-                <div class="dsh-splash-step-body">
-                <div class="dsh-splash-step-title">检测 DeepSeek Harness 环境</div>
-                  <div class="dsh-splash-step-detail">等待上一步完成</div>
-                </div>
-              </div>
-              <div class="dsh-splash-step" data-step="2">
                 <div class="dsh-splash-step-icon"></div>
                 <div class="dsh-splash-step-body">
                   <div class="dsh-splash-step-title">检测当前网络状态</div>
@@ -2189,18 +2208,6 @@ function initSplash() {
             <div class="dsh-splash-next-label" id="dsh-splash-detect-label">正在检测环境…</div>
           </section>
 
-          <section class="dsh-splash-page" data-page="confirm">
-            <div class="dsh-splash-page-head">
-              <div class="dsh-splash-page-title">是否使用本机环境</div>
-              <div class="dsh-splash-page-sub" id="dsh-splash-confirm-sub">检测到本机已有可用环境，是否直接使用？</div>
-            </div>
-            <div class="dsh-splash-confirm-actions">
-              <button class="dsh-splash-btn dsh-splash-btn-primary" id="dsh-splash-confirm-yes" type="button">是</button>
-              <button class="dsh-splash-btn dsh-splash-btn-secondary" id="dsh-splash-confirm-no" type="button">否</button>
-            </div>
-            <div class="dsh-splash-page-sub">选择“是”后，后续更新将继续基于本机环境。</div>
-          </section>
-
           <section class="dsh-splash-page" data-page="location">
             <div class="dsh-splash-page-head">
               <div class="dsh-splash-page-title" id="dsh-splash-location-title">选择安装位置</div>
@@ -2210,9 +2217,8 @@ function initSplash() {
               <input class="dsh-splash-path-input" id="dsh-splash-install-path" type="text" readonly />
               <button class="dsh-splash-path-browse" id="dsh-splash-install-browse" type="button">更改…</button>
             </div>
-            <button class="dsh-splash-btn dsh-splash-btn-primary dsh-splash-install-button" id="dsh-splash-install-go" type="button">开始全局安装</button>
+            <button class="dsh-splash-btn dsh-splash-btn-primary dsh-splash-install-button" id="dsh-splash-install-go" type="button">开始安装</button>
             <button class="dsh-splash-custom-toggle" id="dsh-splash-custom-toggle" type="button">自定义</button>
-            <div class="dsh-splash-page-sub">安装目录会决定后续运行时和更新位置。</div>
           </section>
 
           <section class="dsh-splash-page" data-page="installing">
@@ -2261,7 +2267,6 @@ function initSplash() {
   const track = root.querySelector("#dsh-splash-track");
   const detectNext = root.querySelector("#dsh-splash-detect-next");
   const detectLabel = root.querySelector("#dsh-splash-detect-label");
-  const confirmSub = root.querySelector("#dsh-splash-confirm-sub");
   const locationTitle = root.querySelector("#dsh-splash-location-title");
   const locationSub = root.querySelector("#dsh-splash-location-sub");
   const installPath = root.querySelector("#dsh-splash-install-path");
@@ -2280,16 +2285,14 @@ function initSplash() {
   const pct = root.querySelector("#dsh-splash-track-pct");
   const logOuter = root.querySelector("#dsh-splash-log");
   const logBox = root.querySelector("#dsh-splash-log-scroll");
-  const confirmYes = root.querySelector("#dsh-splash-confirm-yes");
-  const confirmNo = root.querySelector("#dsh-splash-confirm-no");
   const readyStart = root.querySelector("#dsh-splash-ready-start");
   const stepRows = Array.from(root.querySelectorAll("[data-step]")).map((row) => ({
     row,
     icon: row.querySelector(".dsh-splash-step-icon"),
     detail: row.querySelector(".dsh-splash-step-detail"),
   }));
-  const pageMap = { detect: 0, confirm: 1, location: 2, installing: 3, ready: 4 };
-  let currentNextPage = "confirm";
+  const pageMap = { detect: 0, location: 1, installing: 2, ready: 3 };
+  let currentNextPage = "location";
   let currentInstallMode = "bundled";
   let currentNativeInfo = null;
   let customInstall = false;
@@ -2311,7 +2314,7 @@ function initSplash() {
   readyStart.classList.add(themeClass);
   const setPage = (page) => {
     const idx = Object.prototype.hasOwnProperty.call(pageMap, page) ? pageMap[page] : 0;
-    track.style.transform = `translateX(-${idx * 20}%)`;
+    track.style.transform = `translateX(-${idx * 25}%)`;
     root.classList.toggle("dsh-splash-ready-state", page === "ready");
     root.classList.remove("dsh-splash-booting-state");
   };
@@ -2337,40 +2340,36 @@ function initSplash() {
     installGo.textContent = customInstall ? "开始安装" : "开始全局安装";
   };
   const setInstallSubtitle = (mode) => {
-    if (mode === "native") {
-      installTitle.textContent = "开始使用本机环境";
-      installSub.textContent = "检测到本机已有可用环境，点击开始使用即可进入主界面。";
-      locationTitle.textContent = "开始安装";
-      locationSub.textContent = "当前将使用本机环境，不需要额外下载。";
-      readySub.textContent = "本机环境已准备就绪。";
-      return;
-    }
-    if (mode === "local-node") {
-      installTitle.textContent = "选择安装位置";
-      installSub.textContent = "将使用本机 Node 安装 DeepSeek Harness。";
-      locationTitle.textContent = "选择安装位置";
-      locationSub.textContent = "将使用本机 Node 安装 DeepSeek Harness。";
-      readySub.textContent = "安装完成，可以开始使用。";
-      return;
-    }
     if (mode === "global") {
-      installTitle.textContent = "正在安装";
-      installSub.textContent = "将 dsh 安装到全局环境，便于后续安装插件。";
-      locationTitle.textContent = "安装 DeepSeek Harness";
-      locationSub.textContent = "默认使用全局安装。";
-      readySub.textContent = "全局安装完成，可以开始使用。";
+      installTitle.textContent = "安装 Node.js";
+      installSub.textContent = "将先检查本机 Node.js 环境。";
+      locationTitle.textContent = "安装位置";
+      locationSub.textContent = "默认使用本软件的安装位置。";
+      readySub.textContent = "Node.js 已就绪，可以开始使用。";
       return;
     }
-    installTitle.textContent = "选择安装位置";
-    installSub.textContent = "将先下载 Node.js，再安装 DeepSeek Harness。";
+    installTitle.textContent = "安装 Node.js";
+    installSub.textContent = "将先安装 Node.js，再直接启动。";
     locationTitle.textContent = "选择安装位置";
-    locationSub.textContent = "将先下载 Node.js，再安装 DeepSeek Harness。";
+    locationSub.textContent = "将先安装 Node.js，再直接启动。";
     readySub.textContent = "安装完成，可以开始使用。";
   };
   const setDetectAction = (show, labelText, nextPage) => {
     detectNext.hidden = !show;
     detectLabel.textContent = labelText || "正在检测环境…";
-    currentNextPage = nextPage || "confirm";
+    currentNextPage = nextPage || "location";
+  };
+  const setInstallStage = (stage, fallback = "正在安装 DeepSeek Harness…") => {
+    const text = typeof stage === "string" && stage.trim() !== "" ? stage.trim() : fallback;
+    if (text.includes("正在解析安装包")) {
+      installTitle.innerHTML = `<span class="dsh-splash-title-main">正在解析安装包</span><span class="dsh-splash-parsing-dots"><span>.</span><span>.</span><span>.</span></span>`;
+      bootMessage.textContent = "请耐心等待";
+      root.classList.add("dsh-splash-booting-state");
+      return;
+    }
+    installTitle.textContent = text;
+    bootMessage.textContent = "";
+    root.classList.remove("dsh-splash-booting-state");
   };
   ipcRenderer.on("dsh:boot-progress", (_event, payload) => {
     if (!payload || typeof payload !== "object") return;
@@ -2404,15 +2403,7 @@ function initSplash() {
       logOuter.classList.remove("dsh-splash-log-on");
       detectNext.hidden = !payload.detectComplete;
       detectLabel.textContent = payload.detectComplete ? "点击继续" : "正在检测环境…";
-      currentNextPage = payload.nextPage || "confirm";
-      return;
-    }
-    if (payload.page === "confirm") {
-      setPage("confirm");
-      setInstallInputs(true);
-      setInstallSubtitle("native");
-      barRow.hidden = true;
-      logOuter.classList.remove("dsh-splash-log-on");
+      currentNextPage = payload.nextPage || "location";
       return;
     }
     if (payload.page === "location") {
@@ -2429,12 +2420,13 @@ function initSplash() {
       setInstallInputs(true);
       setInstallSubtitle(currentInstallMode);
       if (payload.installError !== true) {
-        installTitle.textContent = "正在安装";
-        installSub.textContent = "正在准备 DeepSeek Harness 运行环境。";
+        setInstallStage(payload.stage, "正在安装 DeepSeek Harness…");
+        installSub.textContent = typeof payload.stage === "string" && payload.stage !== "" ? payload.stage : "正在安装 DeepSeek Harness…";
       }
       if (payload.installError === true) {
         installTitle.textContent = "安装失败";
         installSub.textContent = typeof payload.stage === "string" && payload.stage !== "" ? payload.stage : "请检查网络后重试";
+        root.classList.remove("dsh-splash-booting-state");
       }
       barRow.hidden = false;
       logOuter.classList.add("dsh-splash-log-on");
@@ -2457,10 +2449,14 @@ function initSplash() {
       if (startupTagline === null) {
         startupTagline = STARTUP_TAGLINES[Math.floor(Math.random() * STARTUP_TAGLINES.length)];
       }
-      bootMessage.textContent = startupTagline;
       root.classList.add("dsh-splash-booting-state");
       setInstallInputs(true);
-      installTitle.textContent = "正在启动";
+      if (typeof payload.stage === "string" && payload.stage.includes("正在解析安装包")) {
+        setInstallStage(payload.stage, "正在启动服务…");
+      } else {
+        bootMessage.textContent = startupTagline;
+        installTitle.textContent = typeof payload.stage === "string" && payload.stage.includes("正在安装") ? "正在安装" : "正在启动";
+      }
       installSub.textContent = typeof payload.stage === "string" && payload.stage !== "" ? payload.stage : "正在启动服务…";
       barRow.hidden = false;
       logOuter.classList.remove("dsh-splash-log-on");
@@ -2479,23 +2475,13 @@ function initSplash() {
     while (logBox.childElementCount > 400) logBox.removeChild(logBox.firstChild);
   });
   detectNext.addEventListener("click", () => {
-    if (currentNextPage === "confirm") {
-      setPage("confirm");
+    if (currentNextPage === "start") {
+      api.chooseBootMode("start");
       return;
     }
     currentInstallMode = resolveInstallMode();
     setInstallSubtitle(currentInstallMode);
     setPage("location");
-    api.chooseBootMode("install");
-  });
-  confirmYes.addEventListener("click", () => {
-    api.chooseBootMode("native");
-  });
-  confirmNo.addEventListener("click", () => {
-    currentInstallMode = resolveInstallMode();
-    setInstallSubtitle(currentInstallMode);
-    setPage("location");
-    api.chooseBootMode("install");
   });
   installBrowse.addEventListener("click", async () => {
     const dir = await api.chooseRuntimeDir();
@@ -2533,7 +2519,7 @@ function initSplash() {
       if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
     } catch { /* ignore */ }
   });
-  setInstallSubtitle("bundled");
+  setInstallSubtitle("global");
   // 已安装过（--dsh-boot-resume=1）：启动页直接进入“正在启动”视图（logo + 状态 + 进度条），
   // 由 booting 事件驱动；首次运行则从环境检测向导开始。
   const bootResume = (process.argv || []).some((a) => a === "--dsh-boot-resume=1");
