@@ -11,6 +11,15 @@ dist/
 .smoke-*.txt
 .tmp-dsh-damage-pulse/
 
+# IDE / 编辑器
+.idea/
+
+# 临时文件与调试产物
+.test-ud6/
+.tmp-harness.html
+.tmp-harness-assets/
+.scratch-session-repair/
+
 # OS
 Thumbs.db
 .DS_Store

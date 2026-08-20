@@ -358,6 +358,43 @@ function log(line) {
   } catch { /* ignore */ }
 }
 
+// ---------- 桌面设置（settings.json：余额插件 / 小票 / 更新频道 / 已提示版本） ----------
+const SETTINGS_FILE = () => path.join(app.getPath("userData"), "settings.json");
+const DEFAULT_SETTINGS = {
+  balancePlugin: true,    // 余额插件开关（默认打开）
+  receiptEnabled: true,   // 小票功能开关（默认打开）
+  updateChannel: "latest",// 版本列表频道：latest / next（默认 Latest）
+  notifiedVersion: null,  // 已提示过的新版本号（每次新版本只提示一次）
+};
+let appSettings = { ...DEFAULT_SETTINGS };
+function loadAppSettings() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(SETTINGS_FILE(), "utf8"));
+    if (parsed && typeof parsed === "object") {
+      appSettings = {
+        ...DEFAULT_SETTINGS,
+        ...(typeof parsed.balancePlugin === "boolean" ? { balancePlugin: parsed.balancePlugin } : {}),
+        ...(typeof parsed.receiptEnabled === "boolean" ? { receiptEnabled: parsed.receiptEnabled } : {}),
+        ...(parsed.updateChannel === "latest" || parsed.updateChannel === "next" ? { updateChannel: parsed.updateChannel } : {}),
+        ...(typeof parsed.notifiedVersion === "string" && parsed.notifiedVersion.trim() !== "" ? { notifiedVersion: parsed.notifiedVersion } : {}),
+      };
+    }
+  } catch { /* 首次运行 */ }
+}
+function saveAppSettings() {
+  try {
+    fs.mkdirSync(path.dirname(SETTINGS_FILE()), { recursive: true });
+    fs.writeFileSync(SETTINGS_FILE(), `${JSON.stringify(appSettings, null, 2)}\n`);
+  } catch { /* ignore */ }
+}
+function broadcastSettings() {
+  for (const w of BrowserWindow.getAllWindows()) {
+    try {
+      if (!w.isDestroyed()) w.webContents.send("dsh:settings-changed", appSettings);
+    } catch { /* ignore */ }
+  }
+}
+
 // ---------- 版本 ----------
 function bundledDshVersion() {
   const managed = probeManagedDshRuntime();
@@ -387,6 +424,30 @@ let serverStopping = false;
 /** 本次启动期间服务器 stderr 的累计文本（用于诊断/自愈判断） */
 let startupStderr = "";
 const bootPayloadCache = new WeakMap();
+
+// ---------- 版本安装（设置弹窗 → 启动页安装视图） ----------
+/** 当前正在安装的版本（供启动页安装视图显示与取消）。 */
+let pendingInstallVersion = null;
+/** 用户是否请求取消本次安装。 */
+let cancelInstallRequested = false;
+/** 当前活跃的 npm 安装子进程（取消时结束其进程树）。 */
+let activeInstallChild = null;
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 结束当前正在进行的 npm 安装子进程（含子进程树）。 */
+function killActiveInstall() {
+  cancelInstallRequested = true;
+  if (activeInstallChild) {
+    const pid = activeInstallChild.pid;
+    try { activeInstallChild.kill(); } catch { /* ignore */ }
+    try {
+      execFile("taskkill", ["/pid", String(pid), "/t", "/f"], { windowsHide: true }, () => {});
+    } catch { /* ignore */ }
+  }
+}
 
 function killServerTree() {
   if (!serverChild) return;
@@ -611,7 +672,7 @@ function extractZip(zipPath, destDir) {
   });
 }
 
-function runLoggedCommand(command, args, { cwd, shell = false, elevated = false, env = null, onLine } = {}) {
+function runLoggedCommand(command, args, { cwd, shell = false, elevated = false, env = null, onLine, onChild } = {}) {
   return new Promise((resolve) => {
     const launch = elevated
       ? {
@@ -631,6 +692,7 @@ function runLoggedCommand(command, args, { cwd, shell = false, elevated = false,
       shell: launch.shell,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    if (onChild) onChild(child);
     let tail = "";
     const receive = (chunk) => {
       const text = chunk.toString();
@@ -829,6 +891,7 @@ async function installManagedDsh(
       cwd: app.getPath("userData"),
       shell: !!npm.shell,
       env: npm.env,
+      onChild: (child) => { activeInstallChild = child; },
       onLine: (line) => {
         lastActivityAt = Date.now();
         if (stalled) {
@@ -839,11 +902,18 @@ async function installManagedDsh(
         sendBootLog(win, line);
       },
     });
+    activeInstallChild = null;
 
     clearInterval(creep);
     clearInterval(stallTimer);
     creep = null;
     stallTimer = null;
+
+    if (cancelInstallRequested) {
+      sendBootLog(win, "安装已取消");
+      fs.rmSync(staging, { recursive: true, force: true });
+      return false;
+    }
 
     if (result.code !== 0) {
       sendBootLog(win, `DeepSeek Harness 安装失败（退出码 ${result.code}）${result.tail ? `：${result.tail.slice(-700)}` : ""}`);
@@ -854,6 +924,12 @@ async function installManagedDsh(
     const probe = probeManagedDshRuntime(staging);
     if (!probe.ready) {
       sendBootLog(win, `DeepSeek Harness 安装校验失败：未找到 ${managedDshBinPath(staging)}`);
+      fs.rmSync(staging, { recursive: true, force: true });
+      return false;
+    }
+
+    if (cancelInstallRequested) {
+      sendBootLog(win, "安装已取消");
       fs.rmSync(staging, { recursive: true, force: true });
       return false;
     }
@@ -1499,6 +1575,185 @@ async function fetchChangelog() {
   return null;
 }
 
+/** 拉取 dsh 在 npm 上的全部已发布版本（按 semver 降序）与 dist-tags。 */
+async function listDshVersions() {
+  for (const registry of DEFAULT_REGISTRIES) {
+    try {
+      const data = await fetchJson(
+        `${registry}/@deepseek-ai/dsh`,
+        10_000,
+        "application/vnd.npm.install-v1+json"
+      );
+      if (data && typeof data === "object" && data.versions && typeof data.versions === "object") {
+        const versions = Object.keys(data.versions)
+          .filter((v) => v && v.trim() !== "")
+          .sort((a, b) => compareVersions(b, a));
+        return {
+          registry,
+          distTags: data["dist-tags"] && typeof data["dist-tags"] === "object" ? data["dist-tags"] : {},
+          versions,
+        };
+      }
+    } catch (err) {
+      log(`list versions registry ${registry} failed: ${err.message}`);
+    }
+    try {
+      const data = await fetchJson(`${registry}/@deepseek-ai/dsh`, 10_000);
+      if (data && typeof data === "object" && data.versions && typeof data.versions === "object") {
+        const versions = Object.keys(data.versions)
+          .filter((v) => v && v.trim() !== "")
+          .sort((a, b) => compareVersions(b, a));
+        return {
+          registry,
+          distTags: data["dist-tags"] && typeof data["dist-tags"] === "object" ? data["dist-tags"] : {},
+          versions,
+        };
+      }
+    } catch (err) {
+      log(`list versions registry ${registry} failed: ${err.message}`);
+    }
+  }
+  return null;
+}
+
+/**
+ * 静默检查更新（监控 Next 频道：取全部 dist-tags 与版本中 semver 最高者）。
+ * 发现新版本时通过设置弹窗内的更新提示通知一次（notifiedVersion 持久化，每个版本只提示一次）。
+ */
+async function autoCheckUpdates(win) {
+  const current = bundledDshVersion();
+  sendStatus(win, { state: "checking", current });
+  const latest = await latestDshVersion();
+  log(`auto update check: current=${current} latest=${latest ? latest.version : "N/A"}`);
+  if (!latest) {
+    sendStatus(win, { state: "idle", current });
+    sendEvent(win, {
+      type: "no-update",
+      current,
+      detail: "无法连接到更新源（registry.npmmirror.com / registry.npmjs.org），请检查网络。",
+    });
+    return;
+  }
+  if (compareVersions(latest.version, current) > 0) {
+    sendStatus(win, { state: "available", current, latest: latest.version });
+    if (appSettings.notifiedVersion !== latest.version) {
+      appSettings.notifiedVersion = latest.version;
+      saveAppSettings();
+      sendEvent(win, { type: "notice", current, latest: latest.version });
+    }
+  } else {
+    sendStatus(win, { state: "idle", current });
+    sendEvent(win, { type: "no-update", current, latest: latest.version });
+  }
+}
+
+/**
+ * 按用户选择的具体版本号安装（设置弹窗驱动）。
+ * 成功：切换到新版本并告知渲染层重载页面；失败：回滚旧版本并告知失败。
+ */
+/**
+ * 安装指定版本：先切换到本地启动页的"安装视图"（真实进度条 + 日志 + 取消按钮），
+ * 在安装视图内完成下载/安装/替换，完成后自动返回软件主界面；取消/失败则恢复旧版本并返回。
+ */
+async function installVersionWithSplash(win, version) {
+  if (updating || !win || win.isDestroyed()) return;
+  updating = true;
+  cancelInstallRequested = false;
+  activeInstallChild = null;
+  try {
+    const current = bundledDshVersion();
+    pendingInstallVersion = version;
+
+    // 1) 先切到本地启动页安装视图（不依赖服务器），再开始安装
+    const splashUrl = pathToFileURL(path.join(__dirname, "assets", "splash.html")).href;
+    bootPayloadCache.delete(win);
+    win.loadURL(splashUrl);
+    await delay(400);
+    if (win.isDestroyed()) return;
+    sendBoot(win, {
+      page: "installing",
+      installing: true,
+      stage: `正在安装 DeepSeek Harness v${version}…`,
+      percent: 0,
+      installMode: "global",
+      detectComplete: true,
+    });
+    sendBootLog(win, `开始安装 DeepSeek Harness v${version}`);
+
+    // 2) 停服 → npm 安装（真实进度经 sendBoot/sendBootLog 驱动安装视图）
+    killServerTree();
+    const previousMode = runtimeMode;
+    setRuntimeMode("global");
+    nativeRuntime = await probeNodeToolchain();
+    const installResult = await installManagedDsh(win, { version, keepBackup: true });
+    setRuntimeMode(previousMode);
+    activeInstallChild = null;
+
+    // 3) 成功：重启服务并自动返回主界面
+    if (installResult && !cancelInstallRequested) {
+      const newPort = await startServer(win, { readyBeforeLoad: true });
+      if (newPort !== null) {
+        dshLaunchVersion = version;
+        saveBootChoice(currentBootChoice(dshLaunchVersion));
+        pendingBootUrl = `http://127.0.0.1:${newPort}`;
+        cleanupManagedDshBackup(installResult);
+        sendBoot(win, { page: "installing", installing: true, stage: "安装完成，正在返回软件…", percent: 100 });
+        await delay(600);
+        if (!win.isDestroyed()) {
+          const target = pendingBootUrl;
+          pendingBootUrl = null;
+          win.loadURL(target);
+        }
+        return;
+      }
+      // 服务启动失败：尝试恢复旧版本
+      const restoredFiles = restoreManagedDshBackup(installResult);
+      if (restoredFiles) {
+        dshLaunchVersion = current;
+        sendBootLog(win, "已恢复更新前的 DeepSeek Harness 版本");
+      }
+    }
+
+    // 4) 取消 / 安装失败：恢复旧版本并重启旧服务，然后返回主界面
+    if (!cancelInstallRequested) sendBootLog(win, "DeepSeek Harness 安装失败，正在恢复旧版本…");
+    const restoredFiles = restoreManagedDshBackup(installResult);
+    if (restoredFiles) {
+      dshLaunchVersion = current;
+      sendBootLog(win, "已恢复更新前的 DeepSeek Harness 版本");
+    }
+    let restoredPort = null;
+    try {
+      setRuntimeMode(previousMode);
+      restoredPort = await startServer(win, { readyBeforeLoad: true });
+    } catch { /* ignore */ }
+    if (restoredPort !== null) {
+      pendingBootUrl = `http://127.0.0.1:${restoredPort}`;
+      sendBootLog(win, cancelInstallRequested ? "已取消安装，返回软件" : "旧版本服务已恢复，返回软件");
+      await delay(500);
+      if (!win.isDestroyed()) {
+        const target = pendingBootUrl;
+        pendingBootUrl = null;
+        win.loadURL(target);
+      }
+      return;
+    }
+    // 服务未能恢复：停留在安装视图并提示（提供返回按钮由渲染层触发 dsh:return-to-app）
+    sendBoot(win, {
+      page: "installing",
+      installing: false,
+      installError: true,
+      stage: cancelInstallRequested
+        ? "安装已取消，但服务未能恢复，请重启软件"
+        : "安装失败，旧版本服务未能恢复，请重启软件",
+      percent: 0,
+      installMode: "global",
+    });
+  } finally {
+    updating = false;
+    pendingInstallVersion = null;
+  }
+}
+
 /**
  * 检查/执行更新（自绘弹窗驱动，主进程只等用户操作）。
  * @param win 窗口
@@ -1669,8 +1924,19 @@ function createWindow(url, savedBoot = null) {
     splashShown = true;
     try { win.show(); } catch { /* ignore */ }
   };
-  // 本地 splash.html 加载完成即显示，避免等待 ready-to-show 的额外延迟。
-  win.webContents.once("did-finish-load", showSplash);
+  // 启动页渲染完成信号（preload 在注入 splash DOM 后立即上报）：
+  // 不等 did-finish-load（其会等待页面内 harness-web iframe 等慢子资源，导致先黑屏数秒），
+  // 启动页一渲染好就展示窗口，随后再并行拉起 dsh 服务。
+  const onSplashReady = (event) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== win) return;
+    ipcMain.removeListener("dsh:splash-ready", onSplashReady);
+    showSplash();
+  };
+  ipcMain.on("dsh:splash-ready", onSplashReady);
+  // 兜底 1：即使 preload 信号丢失，文档一加载完也立刻显示（不等 iframe）；
+  // 兜底 2：2.5s 硬超时，保证窗口一定出现。
+  win.webContents.once("did-finish-load", () => setTimeout(showSplash, 150));
+  setTimeout(showSplash, 2500);
   // 主进程检测可能早于 preload 初始化，页面加载完成后重放最近一次启动状态。
   win.webContents.once("did-finish-load", () => {
     const cached = bootPayloadCache.get(win);
@@ -1729,9 +1995,59 @@ function registerIpc() {
   ipcMain.handle("dsh:win-is-maximized", (event) => {
     return BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false;
   });
-  ipcMain.on("dsh:check-update", (event, silent) => {
+  ipcMain.on("dsh:check-update", (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
-    if (win) performUpdate(win, { silent: !!silent });
+    if (win) autoCheckUpdates(win).catch((err) => log(`check-update failed: ${err.message}`));
+  });
+  ipcMain.handle("dsh:get-settings", () => appSettings);
+  ipcMain.on("dsh:save-settings", (event, patch) => {
+    if (!patch || typeof patch !== "object") return;
+    const next = { ...appSettings };
+    for (const key of ["balancePlugin", "receiptEnabled"]) {
+      if (typeof patch[key] === "boolean") next[key] = patch[key];
+    }
+    if (patch.updateChannel === "latest" || patch.updateChannel === "next") next.updateChannel = patch.updateChannel;
+    if (typeof patch.notifiedVersion === "string") next.notifiedVersion = patch.notifiedVersion;
+    appSettings = next;
+    saveAppSettings();
+    broadcastSettings();
+  });
+  ipcMain.handle("dsh:list-versions", () => listDshVersions());
+  ipcMain.on("dsh:install-version", (event, version) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || typeof version !== "string" || version.trim() === "") return;
+    installVersionWithSplash(win, version.trim()).catch((err) => log(`install-version failed: ${err.message}`));
+  });
+  ipcMain.on("dsh:cancel-install", (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return;
+    log("user requested cancel install");
+    killActiveInstall();
+    // 通知启动页安装视图立即切换为"正在取消"
+    sendBootLog(win, "正在取消安装…");
+  });
+  ipcMain.handle("dsh:get-pending-install", () => pendingInstallVersion);
+  ipcMain.handle("dsh:return-to-app", async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return { ok: false };
+    if (pendingBootUrl) {
+      const target = pendingBootUrl;
+      pendingBootUrl = null;
+      win.loadURL(target);
+      return { ok: true };
+    }
+    // 无可用服务：回到启动页默认状态（由渲染层展示提示）
+    return { ok: false };
+  });
+  ipcMain.handle("dsh:reload-after-update", async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || !pendingBootUrl) return { ok: false };
+    const target = pendingBootUrl;
+    pendingBootUrl = null;
+    const ready = waitForRendererReady(win);
+    win.loadURL(target);
+    await ready;
+    return { ok: true };
   });
   ipcMain.handle("dsh:get-version", () => ({
     dsh: bundledDshVersion(),
@@ -1797,7 +2113,15 @@ function registerIpc() {
         const ok = await ensureGlobalRuntime(win);
         if (!ok) throw new Error("DeepSeek Harness 安装失败");
         saveBootChoice(currentBootChoice(dshLaunchVersion));
-        await bootServer(win, { readyBeforeLoad: true });
+        // 安装完成即止：不在此拉起服务，等用户点击"开始使用"后再启动
+        sendBoot(win, {
+          page: "ready",
+          stage: "安装完成，点击开始使用",
+          percent: 100,
+          primaryAction: "start",
+          installMode: runtimeMode,
+          detectComplete: true,
+        });
       } catch (error) {
         sendBootLog(win, `全局安装失败：${error instanceof Error ? error.message : String(error)}`);
         sendBoot(win, { page: "installing", installing: false, installError: true, stage: "安装失败，请检查网络后重试", percent: 0, native: nativeRuntime, detectComplete: true, installMode: "global" });
@@ -1825,7 +2149,15 @@ function registerIpc() {
         return;
       }
       saveBootChoice(currentBootChoice(dshLaunchVersion));
-      await bootServer(win, { readyBeforeLoad: true });
+      // 安装完成即止：不在此拉起服务，等用户点击"开始使用"后再启动
+      sendBoot(win, {
+        page: "ready",
+        stage: "安装完成，点击开始使用",
+        percent: 100,
+        primaryAction: "start",
+        installMode: runtimeMode,
+        detectComplete: true,
+      });
     } catch (error) {
       log(`runtime install flow error: ${error && error.message ? error.message : String(error)}`);
       sendBootLog(win, `安装异常：${error && error.message ? error.message : String(error)}`);
@@ -1864,7 +2196,15 @@ function registerIpc() {
         const ok = await ensureGlobalRuntime(win);
         if (!ok) throw new Error("DeepSeek Harness 安装失败");
         saveBootChoice(currentBootChoice(dshLaunchVersion));
-        await bootServer(win, { readyBeforeLoad: true });
+        // 安装完成即止：不在此拉起服务，等用户点击"开始使用"后再启动
+        sendBoot(win, {
+          page: "ready",
+          stage: "安装完成，点击开始使用",
+          percent: 100,
+          primaryAction: "start",
+          installMode: runtimeMode,
+          detectComplete: true,
+        });
       } catch (error) {
         sendBootLog(win, `全局安装失败：${error instanceof Error ? error.message : String(error)}`);
         sendBoot(win, { page: "installing", installing: false, installError: true, stage: "安装失败，请检查网络后重试", percent: 0, native: nativeRuntime, detectComplete: true, installMode: "global" });
@@ -1920,6 +2260,7 @@ app.whenReady().then(async () => {
   log(`========== ${APP_NAME} start ==========`);
   log(`dev=${isDev}`);
   loadSplashTheme();
+  loadAppSettings();
 
   const savedBoot = loadBootChoice();
   if (savedBoot && savedBoot.dshVersion) dshLaunchVersion = savedBoot.dshVersion;
@@ -1999,10 +2340,10 @@ async function bootServer(win, options = {}) {
   // 页面渲染出主题底色后（dsh:theme 上报）再由主进程恢复毛玻璃透明底。
   win.loadURL(url);
 
-  // 启动后静默检查一次更新：等页面 preload 上报就绪后再触发，
-  // 避免页面还在加载、状态事件丢失导致按钮停留在错误状态。
+  // 启动后静默检查一次更新（监控 Next 频道，发现新版本只通过设置弹窗提示一次）：
+  // 等页面 preload 上报就绪后再触发，避免页面还在加载、状态事件丢失。
   const autoCheck = () => {
-    performUpdate(win, { silent: true }).catch((err) => log(`auto-check failed: ${err.message}`));
+    autoCheckUpdates(win).catch((err) => log(`auto-check failed: ${err.message}`));
   };
   const onReadyForCheck = (event) => {
     if (BrowserWindow.fromWebContents(event.sender) !== win) return;

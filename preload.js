@@ -3,14 +3,16 @@
 /**
  * DeepSeek Harness Desktop —— preload。
  *
- * 在页面中注入自绘的毛玻璃半透明窗体标头（拖拽区 + 最小化/最大化/关闭 + 更新按钮），
- * 并通过 contextBridge 暴露窗口控制与更新能力。DSH 页面本身（功能与界面）不做任何改动，
+ * 在页面中注入自绘的毛玻璃半透明窗体标头（拖拽区 + 最小化/最大化/关闭 + 左上角设置按钮），
+ * 并通过 contextBridge 暴露窗口控制、设置与版本管理能力。DSH 页面本身（功能与界面）不做任何改动，
  * 仅在其顶部为窗体标头预留 44px 高度。
  *
- * 更新按钮形态：
- *   - 无更新  ：显示文字「更新」，点击弹出检测结果弹窗；
- *   - 有更新  ：绿色圆形 + 白色向上箭头，点击弹出更新确认弹窗；
- *   - 检查中/更新中：文字 + 标题栏底部流动进度条。
+ * 软件设置弹窗（设置按钮打开）：
+ *   - Harness版本：Latest / Next 频道滑块 + 全部版本列表（按版本号安装），静默监控 Next，
+ *     每个新版本只通过该弹窗提示一次（设置按钮红点）；
+ *   - 通用：余额插件开关 / 余额插件设置（峰谷计费，表单始终可见）/ 会话小票开关。
+ *
+ * 标题栏余额组件支持右键菜单：余额详情 / 收缩宽度 / 打印小票。
  */
 
 const { contextBridge, ipcRenderer } = require("electron");
@@ -19,10 +21,29 @@ const path = require("node:path");
 
 const TITLEBAR_HEIGHT = 44;
 
-/** 内置暴击 PNG：读取本地资源并转成 data URL，避免依赖页面服务器的静态资源路由。 */
-const CRITICAL_ICON_DATA = (() => {
+/** 内置暴击 PNG：读取本地资源并转成 data URL（懒加载，避免同步读 1.2MB 文件阻塞启动页首帧渲染）。 */
+let criticalIconData = null;
+function criticalIconDataURL() {
+  if (criticalIconData === null) {
+    try {
+      criticalIconData = `data:image/png;base64,${fs.readFileSync(path.join(__dirname, "assets", "Boom.png")).toString("base64")}`;
+    } catch {
+      criticalIconData = "";
+    }
+  }
+  return criticalIconData;
+}
+
+/** 设置按钮图标：读取 assets/setting.svg（灰齿轮），将填充色改为 currentColor 以跟随主题。 */
+const SETTING_ICON_SVG = (() => {
   try {
-    return `data:image/png;base64,${fs.readFileSync(path.join(__dirname, "assets", "Boom.png")).toString("base64")}`;
+    const raw = fs.readFileSync(path.join(__dirname, "assets", "setting.svg"), "utf8");
+    return raw
+      .replace(/<\?xml[^>]*\?>\s*/i, "")
+      .replace(/<!DOCTYPE[^>]*>\s*/i, "")
+      .replace(/fill="#707070"/g, 'fill="currentColor"')
+      .replace(/width="200"/, 'width="18"')
+      .replace(/height="200"/, 'height="18"');
   } catch {
     return "";
   }
@@ -41,7 +62,7 @@ const TITLEBAR_CSS = `
   display: flex;
   align-items: center;
   box-sizing: border-box;
-  padding-left: 14px;
+  padding-left: 0;
   border-bottom: 1px solid color-mix(in srgb, var(--dsw-alias-border-l2, rgba(128,128,128,.25)) 60%, transparent);
   /* 毛玻璃半透明：半透明底色 + 背景模糊 */
   background: color-mix(in srgb, var(--dsw-alias-bg-base, #171a21) 62%, transparent);
@@ -52,13 +73,6 @@ const TITLEBAR_CSS = `
   font-family: -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
   color: var(--dsw-alias-label-primary, #e8eaf0);
 }
-#dsh-titlebar .dsh-tb-brand {
-  display: flex; align-items: center; gap: 9px;
-  font-size: 12.5px; font-weight: 600; letter-spacing: .02em;
-  white-space: nowrap; overflow: hidden;
-  color: var(--dsw-alias-label-primary, #e8eaf0);
-}
-#dsh-titlebar .dsh-tb-brand .dsh-tb-mark { display: block; flex: none; }
 #dsh-titlebar .dsh-tb-spacer { flex: 1; }
 #dsh-titlebar .dsh-tb-balance {
   position: relative; display: inline-flex; align-items: center; gap: 7px;
@@ -86,7 +100,7 @@ const TITLEBAR_CSS = `
 #dsh-titlebar .dsh-tb-panel-season.dsh-tb-season-valley { color: #3ba96b; }
 #dsh-titlebar .dsh-tb-balance-panel {
   position: absolute; top: 39px; right: 0; z-index: 2147483647;
-  display: none; width: 266px; max-width: calc(100vw - 20px); padding: 12px 14px;
+  display: none; width: 236px; max-width: calc(100vw - 20px); padding: 10px 12px;
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.28));
   border-radius: 12px; background: var(--dsw-alias-bg-module-platform, #171b24);
   box-shadow: 0 12px 32px rgba(0,0,0,.22); color: var(--dsw-alias-label-primary, #e8eaf0);
@@ -117,7 +131,34 @@ const TITLEBAR_CSS = `
   color: var(--dsw-alias-label-primary, #e8eaf0);
 }
 #dsh-titlebar .dsh-tb-panel-action-title { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
-#dsh-titlebar .dsh-tb-action-caret {
+/* 打印小票：白色浮起按钮（白底 + 细边框 + 下方柔和阴影，像悬浮在面板之上；hover 上浮更高） */
+#dsh-titlebar .dsh-tb-panel-action.dsh-tb-receipt-btn {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(125, 136, 162, .35);
+  background: #ffffff;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, .20);
+  color: #1f2430;
+  transition: transform .14s ease, box-shadow .16s ease, border-color .14s ease, background .16s ease;
+}
+#dsh-titlebar .dsh-tb-panel-action.dsh-tb-receipt-btn .dsh-tb-receipt-ico {
+  flex: none; display: block;
+  color: #1f2430;
+  transition: transform .14s ease;
+}
+#dsh-titlebar .dsh-tb-panel-action.dsh-tb-receipt-btn:hover {
+  transform: translateY(-2px);
+  border-color: rgba(125, 136, 162, .55);
+  background: #f7f9fc;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, .26);
+}
+#dsh-titlebar .dsh-tb-panel-action.dsh-tb-receipt-btn:hover .dsh-tb-receipt-ico { transform: scale(1.08); }
+#dsh-titlebar .dsh-tb-panel-action.dsh-tb-receipt-btn:active {
+  transform: translateY(0) scale(.99);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, .18);
+}
+.dsh-tb-action-caret {
   display: block; flex: none;
   transition: transform .15s ease;
 }
@@ -133,11 +174,11 @@ const TITLEBAR_CSS = `
   background: var(--dsw-alias-bg-base, #171b24);
 }
 #dsh-titlebar .dsh-tb-panel-pricing.dsh-tb-pricing-open { display: block; }
-#dsh-titlebar .dsh-tb-price-head {
+.dsh-tb-price-head {
   display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px;
 }
-#dsh-titlebar .dsh-tb-price-select,
-#dsh-titlebar .dsh-tb-price-input {
+.dsh-tb-price-select,
+.dsh-tb-price-input {
   -webkit-app-region: no-drag;
   box-sizing: border-box;
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.28));
@@ -148,7 +189,7 @@ const TITLEBAR_CSS = `
   font-variant-numeric: tabular-nums;
 }
 /* 模型下拉框：圆角 + 去掉原生外观 + 自绘箭头 */
-#dsh-titlebar .dsh-tb-price-select {
+.dsh-tb-price-select {
   appearance: none;
   -webkit-appearance: none;
   min-width: 118px; height: 28px; padding: 0 26px 0 8px;
@@ -156,80 +197,80 @@ const TITLEBAR_CSS = `
   background-repeat: no-repeat;
   background-position: right 8px center;
 }
-#dsh-titlebar .dsh-tb-price-grid {
+.dsh-tb-price-grid {
   margin-top: 8px;
   display: grid;
   grid-template-columns: 1.35fr 1fr 1fr;
   gap: 6px;
   align-items: center;
 }
-#dsh-titlebar .dsh-tb-price-grid span {
+.dsh-tb-price-grid span {
   color: var(--dsw-alias-label-tertiary, #8a8f98);
   white-space: nowrap;
 }
-#dsh-titlebar .dsh-tb-price-input {
+.dsh-tb-price-input {
   width: 100%;
   height: 28px;
   padding: 0 8px;
   outline: none;
 }
-#dsh-titlebar .dsh-tb-price-input:focus {
+.dsh-tb-price-input:focus {
   border-color: #4d6bfe;
   box-shadow: 0 0 0 3px rgba(77,107,254,.16);
 }
 /* 峰谷时段设置 */
-#dsh-titlebar .dsh-tb-price-peak-title {
+.dsh-tb-price-peak-title {
   margin-top: 10px;
   color: var(--dsw-alias-label-tertiary, #8a8f98);
   font-size: 12px;
 }
-#dsh-titlebar .dsh-tb-price-peak {
+.dsh-tb-price-peak {
   margin-top: 6px;
   display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
 }
-#dsh-titlebar .dsh-tb-price-peak + .dsh-tb-price-peak {
+.dsh-tb-price-peak + .dsh-tb-price-peak {
   margin-top: 4px;
 }
-#dsh-titlebar .dsh-tb-peak-input {
+.dsh-tb-peak-input {
   width: 46px; flex: none; text-align: center;
 }
-#dsh-titlebar .dsh-tb-price-actions {
+.dsh-tb-price-actions {
   margin-top: 10px;
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
 }
-#dsh-titlebar .dsh-tb-price-status {
+.dsh-tb-price-status {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--dsw-alias-label-tertiary, #8a8f98);
 }
-#dsh-titlebar .dsh-tb-price-buttons { display: inline-flex; align-items: center; gap: 6px; flex: none; }
-#dsh-titlebar .dsh-tb-price-btn {
+.dsh-tb-price-buttons { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.dsh-tb-price-btn {
   -webkit-app-region: no-drag;
   appearance: none; border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.28));
   cursor: pointer; height: 28px; padding: 0 12px; border-radius: 8px;
   background: transparent; color: var(--dsw-alias-label-secondary, #aeb3bd);
   font: inherit;
 }
-#dsh-titlebar .dsh-tb-price-btn:hover {
+.dsh-tb-price-btn:hover {
   background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,.08));
   color: var(--dsw-alias-label-primary, #e8eaf0);
 }
-#dsh-titlebar .dsh-tb-price-btn.dsh-tb-price-btn-primary {
+.dsh-tb-price-btn.dsh-tb-price-btn-primary {
   border-color: #4d6bfe;
   background: #4d6bfe;
   color: #fff;
 }
-#dsh-titlebar .dsh-tb-price-btn.dsh-tb-price-btn-primary:hover {
+.dsh-tb-price-btn.dsh-tb-price-btn-primary:hover {
   background: #5b77ff;
   color: #fff;
 }
 /* 扣费分类标注：缓存命中用琥珀色区分普通扣费红 / 充值绿 */
 #dsh-titlebar .dsh-tb-balance-delta.dsh-tb-delta-hit { color: #e8a33d; }
 /* 计费设置状态：保存成功绿色加粗、失败红色加粗，突出反馈 */
-#dsh-titlebar .dsh-tb-price-status.dsh-tb-price-status-ok {
+.dsh-tb-price-status.dsh-tb-price-status-ok {
   color: #3ba96b;
   font-weight: 600;
 }
-#dsh-titlebar .dsh-tb-price-status.dsh-tb-price-status-err {
+.dsh-tb-price-status.dsh-tb-price-status-err {
   color: #e45555;
   font-weight: 600;
 }
@@ -276,35 +317,45 @@ const TITLEBAR_CSS = `
 #dsh-titlebar .dsh-tb-btn:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,.08)); color: var(--dsw-alias-label-primary, #e8eaf0); }
 #dsh-titlebar .dsh-tb-btn:active { background: rgba(255,255,255,.05); }
 #dsh-titlebar .dsh-tb-btn.dsh-tb-close:hover { background: #e81123; color: #fff; }
-/* 更新按钮：无更新时显示文字 */
-#dsh-titlebar .dsh-tb-btn.dsh-tb-update {
-  min-width: auto; gap: 6px; padding: 0 12px; margin-right: 6px;
-  border-radius: 8px; font-size: 12px; font-weight: 500;
+/* 设置按钮：左上角距边框 20px，图标 + 「设置」文字，hover 呈现按下去的矩形样式 */
+#dsh-titlebar .dsh-tb-btn.dsh-tb-settings {
+  min-width: 36px; height: 30px; padding: 0 10px; gap: 5px;
+  margin: 0 0 0 20px;
+  border-radius: 8px;
+  position: relative;
+  font-size: 12px; font-weight: 500;
+  transition: background .12s ease, box-shadow .12s ease, transform .06s ease;
 }
-#dsh-titlebar .dsh-tb-btn.dsh-tb-update .dsh-tb-update-avail { display: inline-flex; align-items: center; justify-content: center; }
-/* 关键：hidden 属性必须生效（否则 display:inline-flex 会覆盖 [hidden] 导致绿箭头常显） */
-#dsh-titlebar .dsh-tb-btn.dsh-tb-update .dsh-tb-update-avail[hidden] { display: none; }
-#dsh-titlebar .dsh-tb-btn.dsh-tb-update .dsh-tb-update-avail svg { display: block; }
-#dsh-titlebar .dsh-tb-btn.dsh-tb-update:hover .dsh-tb-update-avail { transform: scale(1.08); }
-#dsh-titlebar .dsh-tb-btn.dsh-tb-update .dsh-tb-update-avail svg { transition: transform .15s ease; }
-#dsh-titlebar .dsh-tb-btn.dsh-tb-update.dsh-tb-busy { opacity: .8; cursor: progress; }
-/* 更新进度条：标题栏底部 3px 流动条 */
-#dsh-titlebar .dsh-tb-progress {
-  position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
-  overflow: hidden; pointer-events: none;
-  display: none;
+#dsh-titlebar .dsh-tb-btn.dsh-tb-settings .dsh-tb-settings-icon {
+  display: flex; align-items: center; justify-content: center;
+  color: var(--dsw-alias-label-secondary, #aeb3bd);
+  transition: color .12s ease;
 }
-#dsh-titlebar .dsh-tb-progress.dsh-tb-progress-on { display: block; }
-#dsh-titlebar .dsh-tb-progress-inner {
-  height: 100%; width: 35%;
-  background: linear-gradient(90deg, #2ea043, #4ade80);
-  border-radius: 3px;
-  animation: dsh-tb-progress-slide 1.4s ease-in-out infinite;
+#dsh-titlebar .dsh-tb-btn.dsh-tb-settings .dsh-tb-settings-icon svg { display: block; }
+#dsh-titlebar .dsh-tb-btn.dsh-tb-settings .dsh-tb-settings-label {
+  letter-spacing: .04em;
+  color: var(--dsw-alias-label-secondary, #aeb3bd);
+  transition: color .12s ease;
 }
-@keyframes dsh-tb-progress-slide {
-  0% { margin-left: -35%; }
-  100% { margin-left: 100%; }
+#dsh-titlebar .dsh-tb-btn.dsh-tb-settings:hover {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,.08));
+  box-shadow: inset 0 -1px 0 rgba(0,0,0,.22), 0 1px 2px rgba(0,0,0,.20);
+  transform: translateY(1px);
 }
+#dsh-titlebar .dsh-tb-btn.dsh-tb-settings:hover .dsh-tb-settings-icon,
+#dsh-titlebar .dsh-tb-btn.dsh-tb-settings:hover .dsh-tb-settings-label { color: var(--dsw-alias-label-primary, #e8eaf0); }
+#dsh-titlebar .dsh-tb-btn.dsh-tb-settings:active {
+  transform: translateY(2px) scale(.97);
+  box-shadow: inset 0 2px 4px rgba(0,0,0,.28);
+}
+/* 新版本提示小红点（只提示一次） */
+#dsh-titlebar .dsh-tb-settings-dot {
+  position: absolute; top: 4px; right: 4px;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #f04438;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-bg-base, #171a21) 85%, transparent);
+}
+#dsh-titlebar .dsh-tb-settings-dot[hidden] { display: none; }
 html, body { height: 100%; }
 #root { box-sizing: border-box; height: 100%; padding-top: ${TITLEBAR_HEIGHT}px !important; }
 /* 余额由桌面标题栏承载，隐藏内置插件的右下角承载层，避免重复显示。 */
@@ -322,10 +373,11 @@ function injectTitlebar() {
   const bar = document.createElement("div");
   bar.id = "dsh-titlebar";
   bar.innerHTML = `
-    <div class="dsh-tb-brand">
-      <svg class="dsh-tb-mark" width="16" height="16" viewBox="0 0 24 24" fill="#000000" fill-rule="evenodd" aria-hidden="true"><path d="${OFFICIAL_MARK_PATH}"/></svg>
-      <span>DeepSeek Harness</span>
-    </div>
+    <button class="dsh-tb-btn dsh-tb-settings" id="dsh-tb-settings" title="软件设置" type="button">
+      <span class="dsh-tb-settings-icon">${SETTING_ICON_SVG}</span>
+      <span class="dsh-tb-settings-label">软件设置</span>
+      <span class="dsh-tb-settings-dot" id="dsh-tb-settings-dot" hidden></span>
+    </button>
     <div class="dsh-tb-spacer"></div>
     <div class="dsh-tb-balance" id="dsh-tb-balance" title="DeepSeek 账户余额">
       <span class="dsh-tb-balance-label">当前余额</span>
@@ -336,75 +388,15 @@ function injectTitlebar() {
         <div class="dsh-tb-panel-row"><span class="dsh-tb-panel-muted">可用余额</span><strong id="dsh-tb-panel-total">--</strong></div>
         <div class="dsh-tb-panel-row"><span class="dsh-tb-panel-muted">赠送余额</span><span id="dsh-tb-panel-granted">--</span></div>
         <div class="dsh-tb-panel-row"><span class="dsh-tb-panel-muted">峰谷时段</span><span class="dsh-tb-panel-season dsh-tb-season-valley" id="dsh-tb-panel-season">谷</span></div>
-        <button class="dsh-tb-panel-action" id="dsh-tb-receipt-btn" type="button">
+        <button class="dsh-tb-panel-action dsh-tb-receipt-btn" id="dsh-tb-receipt-btn" type="button">
           <span class="dsh-tb-panel-action-title">
+            <svg class="dsh-tb-receipt-ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/></svg>
             <span>打印小票</span>
           </span>
         </button>
-        <button class="dsh-tb-panel-action" id="dsh-tb-price-toggle" type="button" aria-expanded="false">
-          <span class="dsh-tb-panel-action-title">
-            <span>计费设置</span>
-            <span class="dsh-tb-panel-muted" id="dsh-tb-price-hint">价格/百万Token</span>
-          </span>
-          <svg class="dsh-tb-action-caret" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-            <path d="M3 1.5 L6.5 5 L3 8.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </button>
-        <div class="dsh-tb-panel-pricing" id="dsh-tb-pricing-panel">
-          <div class="dsh-tb-price-head">
-            <span class="dsh-tb-panel-muted">模型</span>
-            <select class="dsh-tb-price-select" id="dsh-tb-price-model">
-              <option value="deepseek-v4-flash">deepseek-v4-flash</option>
-              <option value="deepseek-v4-pro">deepseek-v4-pro</option>
-            </select>
-          </div>
-          <div class="dsh-tb-price-grid">
-            <span></span><span>谷</span><span>峰</span>
-            <span>缓存命中</span>
-            <input class="dsh-tb-price-input" data-rate-scope="offPeak" data-rate-key="cacheHit" inputmode="decimal">
-            <input class="dsh-tb-price-input" data-rate-scope="peak" data-rate-key="cacheHit" inputmode="decimal">
-            <span>缓存未命中</span>
-            <input class="dsh-tb-price-input" data-rate-scope="offPeak" data-rate-key="input" inputmode="decimal">
-            <input class="dsh-tb-price-input" data-rate-scope="peak" data-rate-key="input" inputmode="decimal">
-            <span>输出</span>
-            <input class="dsh-tb-price-input" data-rate-scope="offPeak" data-rate-key="output" inputmode="decimal">
-            <input class="dsh-tb-price-input" data-rate-scope="peak" data-rate-key="output" inputmode="decimal">
-          </div>
-          <div class="dsh-tb-price-peak-title">峰谷时段（DeepSeek 多段，24 小时制）</div>
-          <div class="dsh-tb-price-peak">
-            <span class="dsh-tb-panel-muted">段1</span>
-            <input class="dsh-tb-price-input dsh-tb-peak-input" data-peak-index="0" data-peak-edge="start" inputmode="numeric" title="第 1 段开始（时）">
-            <span class="dsh-tb-panel-muted">–</span>
-            <input class="dsh-tb-price-input dsh-tb-peak-input" data-peak-index="0" data-peak-edge="end" inputmode="numeric" title="第 1 段结束（时）">
-            <span class="dsh-tb-panel-muted">时</span>
-          </div>
-          <div class="dsh-tb-price-peak">
-            <span class="dsh-tb-panel-muted">段2</span>
-            <input class="dsh-tb-price-input dsh-tb-peak-input" data-peak-index="1" data-peak-edge="start" inputmode="numeric" title="第 2 段开始（时）">
-            <span class="dsh-tb-panel-muted">–</span>
-            <input class="dsh-tb-price-input dsh-tb-peak-input" data-peak-index="1" data-peak-edge="end" inputmode="numeric" title="第 2 段结束（时）">
-            <span class="dsh-tb-panel-muted">时</span>
-          </div>
-          <div class="dsh-tb-price-actions">
-            <span class="dsh-tb-price-status" id="dsh-tb-price-status">读取中</span>
-            <span class="dsh-tb-price-buttons">
-              <button class="dsh-tb-price-btn" id="dsh-tb-price-reset" type="button">默认</button>
-              <button class="dsh-tb-price-btn dsh-tb-price-btn-primary" id="dsh-tb-price-save" type="button">保存</button>
-            </span>
-          </div>
-        </div>
       </div>
       <span class="dsh-tb-balance-delta" id="dsh-tb-balance-delta">±&#160;0.00</span>
     </div>
-    <button class="dsh-tb-btn dsh-tb-update" id="dsh-tb-update" title="检查更新" type="button">
-      <span class="dsh-tb-update-label">更新</span>
-      <span class="dsh-tb-update-avail" hidden>
-        <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true">
-          <circle cx="10" cy="10" r="9.2" fill="#2ea043"/>
-          <path d="M10 4.2 L14.4 9.2 H11.5 V15.2 H8.5 V9.2 H5.6 Z" fill="#ffffff"/>
-        </svg>
-      </span>
-    </button>
     <button class="dsh-tb-btn" id="dsh-tb-min" title="最小化" type="button">
       <svg width="12" height="12" viewBox="0 0 12 12"><line x1="1" y1="6" x2="11" y2="6" stroke="currentColor" stroke-width="1.2"/></svg>
     </button>
@@ -414,7 +406,6 @@ function injectTitlebar() {
     <button class="dsh-tb-btn dsh-tb-close" id="dsh-tb-close" title="关闭" type="button">
       <svg width="12" height="12" viewBox="0 0 12 12"><path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" stroke-width="1.2"/></svg>
     </button>
-    <div class="dsh-tb-progress" id="dsh-tb-progress"><div class="dsh-tb-progress-inner"></div></div>
   `;
   document.body.appendChild(bar);
 
@@ -431,17 +422,11 @@ function injectTitlebar() {
       : '<rect x="1" y="1" width="10" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>';
   });
 
-  // 更新按钮状态机：idle(文字"更新") / available(绿箭头) / checking / updating(+进度条)
-  const updateBtn = $("dsh-tb-update");
-  const updateLabel = updateBtn.querySelector(".dsh-tb-update-label");
-  const updateAvail = updateBtn.querySelector(".dsh-tb-update-avail");
-  const progress = $("dsh-tb-progress");
-  updateBtn.addEventListener("click", () => api.checkUpdate(false));
-  api.getVersion().then((info) => {
-    if (info && info.mode === "native" && info.native && info.native.dsh) {
-      updateBtn.hidden = true;
-    }
-  }).catch(() => {});
+  // 设置按钮：打开软件设置弹窗；有新版本时显示小红点（每个版本只提示一次）
+  const settingsBtn = $("dsh-tb-settings");
+  const settingsDot = $("dsh-tb-settings-dot");
+  settingsBtn.addEventListener("click", () => openSettingsDialog());
+  updateSettingsDot();
 
   // 内置 damage-pulse 标题栏读数。标题栏是唯一可见承载，右键余额打开详情面板。
   const balance = $("dsh-tb-balance");
@@ -454,15 +439,6 @@ function injectTitlebar() {
   const panelGranted = $("dsh-tb-panel-granted");
   const panelSeason = $("dsh-tb-panel-season");
   const receiptBtn = $("dsh-tb-receipt-btn");
-  const priceToggle = $("dsh-tb-price-toggle");
-  const priceHint = $("dsh-tb-price-hint");
-  const pricingPanel = $("dsh-tb-pricing-panel");
-  const priceModel = $("dsh-tb-price-model");
-  const priceStatus = $("dsh-tb-price-status");
-  const priceReset = $("dsh-tb-price-reset");
-  const priceSave = $("dsh-tb-price-save");
-  const priceInputs = Array.from(bar.querySelectorAll(".dsh-tb-price-input:not(.dsh-tb-peak-input)"));
-  const peakInputs = Array.from(bar.querySelectorAll(".dsh-tb-peak-input"));
   let balanceValue = null;
   let remoteBalanceValue = null;
   let chargeSeq = 0;
@@ -471,25 +447,6 @@ function injectTitlebar() {
   let balanceTimer = null;
   let deltaTimer = null;
   let chargePollInFlight = false;
-  let pricingOpen = false;
-  let priceTable = null;
-  let priceStatusTimer = null;
-
-  const DEFAULT_PRICE_TABLE = {
-    version: "2026-08-17",
-    peakHours: [[9, 12], [14, 18]],
-    models: {
-      "deepseek-v4-flash": {
-        offPeak: { input: 1.5, cacheHit: 0.05, output: 4.5 },
-        peak: { input: 3, cacheHit: 0.1, output: 9 },
-      },
-      "deepseek-v4-pro": {
-        offPeak: { input: 4.5, cacheHit: 0.15, output: 13.5 },
-        peak: { input: 9, cacheHit: 0.3, output: 27 },
-      },
-    },
-  };
-  const clonePriceTable = (table) => JSON.parse(JSON.stringify(table));
 
   const fmtMoney = (value) => {
     const n = Number(value);
@@ -522,8 +479,10 @@ function injectTitlebar() {
     panelSeason.classList.toggle("dsh-tb-season-peak", peak);
     panelSeason.classList.toggle("dsh-tb-season-valley", !peak);
   };
+  // 供设置弹窗内保存价格表后刷新标题栏峰谷指示
+  window.dshRefreshSeason = updateSeason;
   const criticalIcon = () => `
-    <img class="dsh-tb-critical-icon" src="${CRITICAL_ICON_DATA}" alt="" aria-hidden="true">`;
+    <img class="dsh-tb-critical-icon" src="${criticalIconDataURL()}" alt="" aria-hidden="true">`;
   /** 扣费提示停留时长（原 1800ms，现定为 3300ms）。 */
   const DELTA_HOLD_MS = 3300;
   /** 连续扣费提示的错峰间隔：同一批事件各自获得展示机会，避免被覆盖。 */
@@ -629,175 +588,30 @@ function injectTitlebar() {
       renderBalance(balanceRenderMode);
     }, 60);
   };
-  const setPriceStatus = (text, opts = {}) => {
-    priceStatus.textContent = text;
-    priceStatus.classList.toggle("dsh-tb-price-status-ok", !!opts.ok);
-    priceStatus.classList.toggle("dsh-tb-price-status-err", !!opts.err);
-    // 成功/失败提示停留 3.5s 后恢复弱化样式，避免长期占据注意力
-    if (priceStatusTimer !== null) {
-      clearTimeout(priceStatusTimer);
-      priceStatusTimer = null;
-    }
-    if (opts.ok || opts.err) {
-      priceStatusTimer = setTimeout(() => {
-        priceStatus.classList.remove("dsh-tb-price-status-ok", "dsh-tb-price-status-err");
-        priceStatusTimer = null;
-      }, 3500);
-    }
-  };
-  const activePriceModel = () => priceModel.value || "deepseek-v4-flash";
-  const ensurePriceTable = () => {
-    if (priceTable === null) priceTable = clonePriceTable(DEFAULT_PRICE_TABLE);
-    for (const model of Object.keys(DEFAULT_PRICE_TABLE.models)) {
-      if (!priceTable.models) priceTable.models = {};
-      if (!priceTable.models[model]) priceTable.models[model] = clonePriceTable(DEFAULT_PRICE_TABLE.models[model]);
-      for (const scope of ["offPeak", "peak"]) {
-        if (!priceTable.models[model][scope]) priceTable.models[model][scope] = {};
-        for (const key of ["input", "cacheHit", "output"]) {
-          const value = Number(priceTable.models[model][scope][key]);
-          if (!Number.isFinite(value) || value < 0) {
-            priceTable.models[model][scope][key] = DEFAULT_PRICE_TABLE.models[model][scope][key];
-          }
-        }
-      }
-    }
-    if (!Array.isArray(priceTable.peakHours)) priceTable.peakHours = clonePriceTable(DEFAULT_PRICE_TABLE.peakHours);
-    if (typeof priceTable.version !== "string") priceTable.version = DEFAULT_PRICE_TABLE.version;
-  };
-  const renderPriceForm = () => {
-    ensurePriceTable();
-    const model = activePriceModel();
-    const modelTable = priceTable.models[model] || DEFAULT_PRICE_TABLE.models[model];
-    for (const input of priceInputs) {
-      const scope = input.dataset.rateScope;
-      const key = input.dataset.rateKey;
-      input.value = String(modelTable[scope][key]);
-    }
-    // 峰谷时段（DeepSeek 多段，如 [[9,12],[14,18]]）；按段覆盖已保存值，缺段用默认补足
-    const savedPeaks = Array.isArray(priceTable.peakHours) && priceTable.peakHours.length > 0
-      ? priceTable.peakHours
-      : DEFAULT_PRICE_TABLE.peakHours;
-    const peakHours = DEFAULT_PRICE_TABLE.peakHours.map((pair, index) => {
-      const saved = savedPeaks[index] || pair;
-      return [Number(saved[0]), Number(saved[1])];
-    });
-    for (const input of peakInputs) {
-      const idx = Number(input.dataset.peakIndex);
-      const edge = input.dataset.peakEdge;
-      const pair = peakHours[idx] || [];
-      input.value = String(edge === "start" ? pair[0] : pair[1]);
-    }
-  };
-  const readPriceForm = () => {
-    ensurePriceTable();
-    const model = activePriceModel();
-    for (const input of priceInputs) {
-      const scope = input.dataset.rateScope;
-      const key = input.dataset.rateKey;
-      const value = Number(input.value.trim());
-      if (!Number.isFinite(value) || value < 0) throw new Error("价格必须是非负数字");
-      priceTable.models[model][scope][key] = value;
-    }
-    // 读取峰谷时段输入（0-23 整数小时，start < end）；以当前已保存时段为底，未编辑段不重置
-    const savedPeaks = Array.isArray(priceTable.peakHours) && priceTable.peakHours.length > 0
-      ? priceTable.peakHours
-      : DEFAULT_PRICE_TABLE.peakHours;
-    const peakHours = DEFAULT_PRICE_TABLE.peakHours.map((pair, index) => {
-      const saved = savedPeaks[index] || pair;
-      return [Number(saved[0]), Number(saved[1])];
-    });
-    for (const input of peakInputs) {
-      const idx = Number(input.dataset.peakIndex);
-      const edge = input.dataset.peakEdge;
-      const value = Number(input.value.trim());
-      if (!Number.isInteger(value) || value < 0 || value > 23) throw new Error("峰谷时段必须是 0-23 的整数小时");
-      peakHours[idx][edge === "start" ? 0 : 1] = value;
-    }
-    for (const [start, end] of peakHours) {
-      if (start >= end) throw new Error("峰谷时段开始必须小于结束");
-    }
-    priceTable.version = "desktop-custom";
-    priceTable.peakHours = peakHours;
-    return priceTable;
-  };
-  const loadPricing = async () => {
-    try {
-      const res = await fetch("/api/token-monitor/pricing", { cache: "no-store" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      priceTable = await res.json();
-      renderPriceForm();
-      setPriceStatus("已读取");
-    } catch {
-      priceTable = clonePriceTable(DEFAULT_PRICE_TABLE);
-      renderPriceForm();
-      setPriceStatus("读取失败，使用默认值", { err: true });
-    }
-    updateSeason();
-  };
-  const savePricing = async (table) => {
-    const res = await fetch("/api/token-monitor/pricing", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(table),
-      cache: "no-store",
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    priceTable = await res.json();
-    renderPriceForm();
-  };
-  const setPricingOpen = (open) => {
-    pricingOpen = open;
-    pricingPanel.classList.toggle("dsh-tb-pricing-open", open);
-    priceToggle.classList.toggle("dsh-tb-panel-action-on", open);
-    priceToggle.setAttribute("aria-expanded", String(open));
-    priceHint.textContent = open ? "点击收起" : "价格/百万Token";
-    if (open) void loadPricing();
+  const setReceiptVisibility = () => {
+    receiptBtn.hidden = !appSettings.receiptEnabled;
   };
   receiptBtn.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
     openReceipt();
   });
-  priceToggle.addEventListener("click", (event) => {
+  // 右键余额 → 直接打开/收起余额详情面板（面板内含 打印小票 入口）
+  balance.addEventListener("contextmenu", (event) => {
     event.preventDefault();
-    event.stopPropagation();
-    setPricingOpen(!pricingOpen);
+    balancePanel.classList.toggle("dsh-tb-panel-open");
   });
-  for (const input of priceInputs) {
-    input.addEventListener("input", () => {
-      ensurePriceTable();
-      const value = Number(input.value.trim());
-      if (!Number.isFinite(value) || value < 0) return;
-      priceTable.models[activePriceModel()][input.dataset.rateScope][input.dataset.rateKey] = value;
-    });
-  }
-  priceModel.addEventListener("change", () => renderPriceForm());
-  priceReset.addEventListener("click", async (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    priceTable = clonePriceTable(DEFAULT_PRICE_TABLE);
-    renderPriceForm();
-    try {
-      setPriceStatus("保存中");
-      await savePricing(priceTable);
-      setPriceStatus("已恢复默认，立即生效", { ok: true });
-      updateSeason();
-    } catch {
-      setPriceStatus("保存失败", { err: true });
-    }
+  document.addEventListener("pointerdown", (event) => {
+    if (!balance.contains(event.target)) balancePanel.classList.remove("dsh-tb-panel-open");
   });
-  priceSave.addEventListener("click", async (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    try {
-      setPriceStatus("保存中");
-      await savePricing(readPriceForm());
-      setPriceStatus("✓ 已保存，立即生效", { ok: true });
-      updateSeason();
-    } catch (error) {
-      setPriceStatus(error instanceof Error ? error.message : "保存失败", { err: true });
-    }
-  });
+  // 应用桌面设置（余额插件 / 小票开关），并跟随设置变更实时刷新
+  settingsDotEl = settingsDot;
+  updateSettingsDot();
+  applySettings(appSettings);
+  setReceiptVisibility();
+  api.getSettings().then((settings) => { if (settings) applySettings(settings); }).catch(() => {});
+  api.onSettingsChanged((settings) => { if (settings) applySettings(settings); });
+
   const pollCharges = async () => {
     if (chargePollInFlight) return;
     chargePollInFlight = true;
@@ -846,160 +660,944 @@ function injectTitlebar() {
       if (Math.abs(remoteDelta) > 1e-9) showDelta({ cost: Math.abs(remoteDelta), damageKind: "normal" }, remoteDelta > 0 ? "+" : "-");
     } catch { /* keep the last known titlebar value */ }
   };
-  balance.addEventListener("contextmenu", (event) => {
-    event.preventDefault();
-    balancePanel.classList.toggle("dsh-tb-panel-open");
-  });
-  document.addEventListener("pointerdown", (event) => {
-    if (!balance.contains(event.target)) balancePanel.classList.remove("dsh-tb-panel-open");
-  });
   void pollBalance();
   void pollCharges();
   updateSeason();
-  // 启动即拉取价格表：峰谷指示（峰/谷）与面板表单跟随已保存的时段
-  void loadPricing();
+  // 启动即拉取价格表：峰谷指示（峰/谷）跟随已保存的时段
+  void loadPricingTable().then(() => updateSeason());
   // 每秒读取本地余额缓存；Host 余额服务本身仍按其轮询周期访问官方接口。
   balanceTimer = setInterval(pollBalance, 1000);
   // 扣费事件由 Host 在 usage 到达后立即入队；短轮询让标题栏尽快反映结果。
   chargeTimer = setInterval(pollCharges, 250);
   setInterval(updateSeason, 30000);
-
-  api.onUpdateStatus((status) => {
-    const state = status && status.state ? status.state : "idle";
-    const busy = state === "checking" || state === "updating";
-    updateBtn.classList.toggle("dsh-tb-busy", busy);
-    progress.classList.toggle("dsh-tb-progress-on", state === "updating");
-    if (state === "available") {
-      updateLabel.hidden = true;
-      updateAvail.hidden = false;
-      updateBtn.title = `发现新版本 v${status.latest}，点击更新`;
-    } else if (state === "checking") {
-      updateLabel.hidden = false;
-      updateAvail.hidden = true;
-      updateLabel.textContent = "检查中…";
-      updateBtn.title = "正在检查更新…";
-    } else if (state === "updating") {
-      updateLabel.hidden = false;
-      updateAvail.hidden = true;
-      updateLabel.textContent = "更新中…";
-      updateBtn.title = "正在下载并安装更新…";
-    } else {
-      updateLabel.hidden = false;
-      updateAvail.hidden = true;
-      updateLabel.textContent = "更新";
-      updateBtn.title = "检查更新";
-    }
-  });
 }
 
-const UPDATE_DIALOG_CSS = `
-#dsh-update-dialog {
-  /* 强调色：DeepSeek 品牌蓝，浅色/深色主题下均清晰；
-     表面色（背景/文字/边框）通过下方 --dsw-alias-* 变量跟随软件明暗主题 */
-  --dsh-ud-accent: #4d6bfe;
+// ---------- 软件设置弹窗（Harness版本 / 通用设置） ----------
+
+/** 桌面设置本地缓存（与主进程 settings.json 同步）。 */
+let appSettings = { balancePlugin: true, receiptEnabled: true, updateChannel: "latest" };
+/** 设置按钮新版本小红点元素。 */
+let settingsDotEl = null;
+/** 待提示的新版本信息（每个版本只提示一次）。 */
+let updateNoticeInfo = null;
+/** 设置弹窗元素与状态。 */
+let settingsDialogEl = null;
+let settingsPanelName = "versions";
+let versionListData = null;
+let installingVersion = null;
+let pricingControls = null;
+/** 版本安装模式：当前正在安装的版本号（启动页安装视图使用）。 */
+let pendingInstallVersionLocal = null;
+
+let priceTable = null;
+const DEFAULT_PRICE_TABLE = {
+  version: "2026-08-17",
+  peakHours: [[9, 12], [14, 18]],
+  models: {
+    "deepseek-v4-flash": {
+      offPeak: { input: 1.5, cacheHit: 0.05, output: 4.5 },
+      peak: { input: 3, cacheHit: 0.1, output: 9 },
+    },
+    "deepseek-v4-pro": {
+      offPeak: { input: 4.5, cacheHit: 0.15, output: 13.5 },
+      peak: { input: 9, cacheHit: 0.3, output: 27 },
+    },
+  },
+};
+const clonePriceTable = (table) => JSON.parse(JSON.stringify(table));
+
+const escHtml = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** 简易 semver 比较（与主进程回退实现一致）。 */
+function compareVersionsPreload(a, b) {
+  const parse = (v) => {
+    const m = String(v).trim().match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
+    if (!m) return [0, 0, 0, ""];
+    return [Number(m[1]), Number(m[2]), Number(m[3]), m[4] || ""];
+  };
+  const [ma, pa, ra, prea] = parse(a);
+  const [mb, pb, rb, preb] = parse(b);
+  for (const [x, y] of [[ma, mb], [pa, pb], [ra, rb]]) {
+    if (x !== y) return x > y ? 1 : -1;
+  }
+  if (prea === preb) return 0;
+  if (prea === "") return 1;
+  if (preb === "") return -1;
+  return prea < preb ? -1 : 1;
+}
+
+/** 应用桌面设置到界面（余额插件开关 / 小票开关）。 */
+function applySettings(s) {
+  if (!s || typeof s !== "object") return;
+  appSettings = { ...appSettings, ...s };
+  const balance = document.getElementById("dsh-tb-balance");
+  if (balance) {
+    balance.style.display = appSettings.balancePlugin ? "" : "none";
+  }
+  const receiptBtn = document.getElementById("dsh-tb-receipt-btn");
+  if (receiptBtn) receiptBtn.hidden = !appSettings.receiptEnabled;
+  syncSettingsSwitches();
+}
+
+/** 设置按钮新版本红点。 */
+function updateSettingsDot() {
+  if (!settingsDotEl) return;
+  settingsDotEl.hidden = !updateNoticeInfo;
+  const btn = settingsDotEl.closest(".dsh-tb-settings");
+  if (btn) btn.title = updateNoticeInfo ? `发现新版本 v${updateNoticeInfo.latest}，点击查看` : "软件设置";
+}
+
+// ---------- 计费设置（峰谷价格表，迁移至设置弹窗的"余额插件设置"下拉内） ----------
+
+function ensurePriceTable() {
+  if (priceTable === null) priceTable = clonePriceTable(DEFAULT_PRICE_TABLE);
+  if (!priceTable.models) priceTable.models = {};
+  for (const model of Object.keys(DEFAULT_PRICE_TABLE.models)) {
+    if (!priceTable.models[model]) priceTable.models[model] = clonePriceTable(DEFAULT_PRICE_TABLE.models[model]);
+    for (const scope of ["offPeak", "peak"]) {
+      if (!priceTable.models[model][scope]) priceTable.models[model][scope] = {};
+      for (const key of ["input", "cacheHit", "output"]) {
+        const value = Number(priceTable.models[model][scope][key]);
+        if (!Number.isFinite(value) || value < 0) {
+          priceTable.models[model][scope][key] = DEFAULT_PRICE_TABLE.models[model][scope][key];
+        }
+      }
+    }
+  }
+  if (!Array.isArray(priceTable.peakHours)) priceTable.peakHours = clonePriceTable(DEFAULT_PRICE_TABLE.peakHours);
+  if (typeof priceTable.version !== "string") priceTable.version = DEFAULT_PRICE_TABLE.version;
+  return priceTable;
+}
+
+/** 从服务端拉取价格表；失败回退默认值。 */
+async function loadPricingTable() {
+  try {
+    const res = await fetch("/api/token-monitor/pricing", { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    priceTable = await res.json();
+    return priceTable;
+  } catch {
+    priceTable = clonePriceTable(DEFAULT_PRICE_TABLE);
+    return priceTable;
+  }
+}
+
+/** 在指定容器内绑定计费设置表单（模型 / 价格 / 峰谷时段 / 默认 / 保存）。 */
+function attachPricingForm(root) {
+  const priceModel = root.querySelector("#dsh-tb-price-model");
+  const priceStatus = root.querySelector("#dsh-tb-price-status");
+  const priceReset = root.querySelector("#dsh-tb-price-reset");
+  const priceSave = root.querySelector("#dsh-tb-price-save");
+  const priceInputs = Array.from(root.querySelectorAll(".dsh-tb-price-input:not(.dsh-tb-peak-input)"));
+  const peakInputs = Array.from(root.querySelectorAll(".dsh-tb-peak-input"));
+  let priceStatusTimer = null;
+
+  const activePriceModel = () => (priceModel && priceModel.value ? priceModel.value : "deepseek-v4-flash");
+  const setPriceStatus = (text, opts = {}) => {
+    if (!priceStatus) return;
+    priceStatus.textContent = text;
+    priceStatus.classList.toggle("dsh-tb-price-status-ok", !!opts.ok);
+    priceStatus.classList.toggle("dsh-tb-price-status-err", !!opts.err);
+    if (priceStatusTimer !== null) {
+      clearTimeout(priceStatusTimer);
+      priceStatusTimer = null;
+    }
+    if (opts.ok || opts.err) {
+      priceStatusTimer = setTimeout(() => {
+        priceStatus.classList.remove("dsh-tb-price-status-ok", "dsh-tb-price-status-err");
+        priceStatusTimer = null;
+      }, 3500);
+    }
+  };
+  const renderPriceForm = () => {
+    ensurePriceTable();
+    const model = activePriceModel();
+    const modelTable = (priceTable.models && priceTable.models[model]) || DEFAULT_PRICE_TABLE.models[model];
+    for (const input of priceInputs) {
+      const scope = input.dataset.rateScope;
+      const key = input.dataset.rateKey;
+      input.value = String(modelTable[scope][key]);
+    }
+    const savedPeaks = Array.isArray(priceTable.peakHours) && priceTable.peakHours.length > 0
+      ? priceTable.peakHours
+      : DEFAULT_PRICE_TABLE.peakHours;
+    const peakHours = DEFAULT_PRICE_TABLE.peakHours.map((pair, index) => {
+      const saved = savedPeaks[index] || pair;
+      return [Number(saved[0]), Number(saved[1])];
+    });
+    for (const input of peakInputs) {
+      const idx = Number(input.dataset.peakIndex);
+      const edge = input.dataset.peakEdge;
+      const pair = peakHours[idx] || [];
+      input.value = String(edge === "start" ? pair[0] : pair[1]);
+    }
+  };
+  const readPriceForm = () => {
+    ensurePriceTable();
+    const model = activePriceModel();
+    for (const input of priceInputs) {
+      const scope = input.dataset.rateScope;
+      const key = input.dataset.rateKey;
+      const value = Number(input.value.trim());
+      if (!Number.isFinite(value) || value < 0) throw new Error("价格必须是非负数字");
+      priceTable.models[model][scope][key] = value;
+    }
+    const savedPeaks = Array.isArray(priceTable.peakHours) && priceTable.peakHours.length > 0
+      ? priceTable.peakHours
+      : DEFAULT_PRICE_TABLE.peakHours;
+    const peakHours = DEFAULT_PRICE_TABLE.peakHours.map((pair, index) => {
+      const saved = savedPeaks[index] || pair;
+      return [Number(saved[0]), Number(saved[1])];
+    });
+    for (const input of peakInputs) {
+      const idx = Number(input.dataset.peakIndex);
+      const edge = input.dataset.peakEdge;
+      const value = Number(input.value.trim());
+      if (!Number.isInteger(value) || value < 0 || value > 23) throw new Error("峰谷时段必须是 0-23 的整数小时");
+      peakHours[idx][edge === "start" ? 0 : 1] = value;
+    }
+    for (const [start, end] of peakHours) {
+      if (start >= end) throw new Error("峰谷时段开始必须小于结束");
+    }
+    priceTable.version = "desktop-custom";
+    priceTable.peakHours = peakHours;
+    return priceTable;
+  };
+  const savePricing = async (table) => {
+    const res = await fetch("/api/token-monitor/pricing", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(table),
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    priceTable = await res.json();
+    renderPriceForm();
+  };
+  const refreshSeason = () => {
+    if (typeof window.dshRefreshSeason === "function") window.dshRefreshSeason();
+  };
+  for (const input of priceInputs) {
+    input.addEventListener("input", () => {
+      ensurePriceTable();
+      const value = Number(input.value.trim());
+      if (!Number.isFinite(value) || value < 0) return;
+      priceTable.models[activePriceModel()][input.dataset.rateScope][input.dataset.rateKey] = value;
+    });
+  }
+  if (priceModel) priceModel.addEventListener("change", () => renderPriceForm());
+  if (priceReset) {
+    priceReset.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      priceTable = clonePriceTable(DEFAULT_PRICE_TABLE);
+      renderPriceForm();
+      try {
+        setPriceStatus("保存中");
+        await savePricing(priceTable);
+        setPriceStatus("已恢复默认，立即生效", { ok: true });
+        refreshSeason();
+      } catch {
+        setPriceStatus("保存失败", { err: true });
+      }
+    });
+  }
+  if (priceSave) {
+    priceSave.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      try {
+        setPriceStatus("保存中");
+        await savePricing(readPriceForm());
+        setPriceStatus("✓ 已保存，立即生效", { ok: true });
+        refreshSeason();
+      } catch (error) {
+        setPriceStatus(error instanceof Error ? error.message : "保存失败", { err: true });
+      }
+    });
+  }
+  const refresh = async () => {
+    await loadPricingTable();
+    renderPriceForm();
+    setPriceStatus("已读取");
+  };
+  void refresh();
+  return { refresh };
+}
+
+// ---------- 设置弹窗 UI ----------
+
+const SETTINGS_DIALOG_CSS = `
+#dsh-settings-dialog {
+  --dsh-set-accent: #4d6bfe;
   position: fixed; inset: 0; z-index: 2147483647;
   display: none; align-items: center; justify-content: center;
-  background: rgba(8, 10, 16, 0.25);
-  -webkit-backdrop-filter: blur(4px);
-  backdrop-filter: blur(4px);
-  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  background: rgba(8, 10, 16, 0.34);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  /* 字体与 dsh 一致（页面已加载 DM Sans 等字体文件） */
+  font-family: var(--ds-font-sans, "DM Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif);
 }
-#dsh-update-dialog.dsh-ud-open { display: flex; }
-.dsh-ud-card {
-  width: 430px; max-width: calc(100vw - 40px);
+#dsh-settings-dialog.dsh-set-open { display: flex; }
+#dsh-settings-dialog.dsh-set-open .dsh-set-card { animation: dsh-set-in .2s cubic-bezier(.2,.7,.3,1) both; }
+@keyframes dsh-set-in {
+  from { opacity: 0; transform: translateY(10px) scale(.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.dsh-set-card {
+  width: 660px; max-width: calc(100vw - 40px);
+  height: 500px; max-height: calc(100vh - 60px);
+  display: flex; flex-direction: column;
   border-radius: 16px; overflow: hidden;
-  /* 纯色不透明，跟随主题 */
   background: var(--dsw-alias-bg-module-platform, #171b24);
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.28));
-  box-shadow: 0 10px 30px rgba(0,0,0,.22);
+  box-shadow: 0 16px 48px rgba(0,0,0,.34);
   color: var(--dsw-alias-label-primary, #e8eaf0);
 }
-.dsh-ud-head {
-  display: flex; align-items: center; gap: 8px;
-  /* 收窄的标题栏：更矮、无蓝色底、跟随主题 */
-  padding: 7px 12px;
+.dsh-set-head {
+  display: flex; align-items: center; gap: 9px;
+  padding: 10px 14px; flex: none;
   border-bottom: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.28));
-  background: transparent;
 }
-.dsh-ud-mark { color: var(--dsh-ud-accent); flex: none; display: block; }
-.dsh-ud-head .dsh-ud-title { font-size: 13px; font-weight: 600; flex: 1; color: var(--dsw-alias-label-primary, #e8eaf0); }
-.dsh-ud-close {
+.dsh-set-mark { color: var(--dsh-set-accent); flex: none; display: block; }
+.dsh-set-title { font-size: 13.5px; font-weight: 600; flex: 1; letter-spacing: .02em; }
+.dsh-set-close {
   -webkit-app-region: no-drag;
   appearance: none; border: none; background: transparent; cursor: pointer;
   color: var(--dsw-alias-label-tertiary, #8a8f98);
-  width: 24px; height: 24px; border-radius: 6px;
+  width: 26px; height: 26px; border-radius: 7px;
   display: inline-flex; align-items: center; justify-content: center;
+  transition: background .12s ease, color .12s ease;
 }
-.dsh-ud-close:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,.08)); color: var(--dsw-alias-label-primary, #e8eaf0); }
-.dsh-ud-body { padding: 18px 20px 20px; }
-.dsh-ud-row { display: flex; align-items: center; gap: 14px; }
-.dsh-ud-msg { font-size: 14px; font-weight: 500; }
-.dsh-ud-sub { font-size: 12px; color: var(--dsw-alias-label-tertiary, #8a8f98); margin-top: 4px; line-height: 1.6; }
-.dsh-ud-icon { flex: none; }
-.dsh-ud-icon-accent { color: var(--dsh-ud-accent); }
-.dsh-ud-spinner {
-  width: 34px; height: 34px; flex: none; border-radius: 50%;
-  border: 3px solid color-mix(in srgb, var(--dsh-ud-accent) 22%, transparent);
-  border-top-color: var(--dsh-ud-accent);
-  animation: dsh-ud-spin .9s linear infinite;
+.dsh-set-close:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,.08)); color: var(--dsw-alias-label-primary, #e8eaf0); }
+.dsh-set-body { flex: 1; display: flex; min-height: 0; }
+/* 左侧导航：dsh 风格，带字间距与活动药丸 */
+.dsh-set-sidebar {
+  width: 140px; flex: none;
+  padding: 14px 10px;
+  border-right: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.22));
+  display: flex; flex-direction: column; gap: 4px;
 }
-@keyframes dsh-ud-spin { to { transform: rotate(360deg); } }
-.dsh-ud-versions { margin-top: 14px; display: flex; align-items: center; gap: 10px; }
-.dsh-ud-vtag {
-  font-size: 13px; font-weight: 600; font-family: ui-monospace, Consolas, monospace;
-  padding: 4px 10px; border-radius: 8px;
-  background: color-mix(in srgb, #000 12%, var(--dsw-alias-bg-module-platform, #171b24));
-  border: 1px solid color-mix(in srgb, var(--dsw-alias-border-l2, rgba(128,128,128,.25)) 70%, var(--dsw-alias-bg-module-platform, #171b24));
+.dsh-set-nav {
+  -webkit-app-region: no-drag;
+  appearance: none; border: none; background: transparent; cursor: pointer;
+  text-align: left; width: 100%;
+  padding: 9px 12px; border-radius: 9px;
+  font: inherit; font-size: 12.5px; font-weight: 500;
+  letter-spacing: .06em;
+  color: var(--dsw-alias-label-secondary, #aeb3bd);
+  transition: background .14s ease, color .14s ease, transform .08s ease;
 }
-.dsh-ud-vtag-new { color: var(--dsh-ud-accent); border-color: color-mix(in srgb, var(--dsh-ud-accent) 45%, transparent); }
-.dsh-ud-arrow { color: var(--dsh-ud-accent); font-weight: 700; font-size: 14px; }
-.dsh-ud-changelog {
-  margin-top: 12px; max-height: 190px; overflow: auto;
-  padding: 10px 12px; border-radius: 10px;
-  background: color-mix(in srgb, #000 10%, var(--dsw-alias-bg-module-platform, #171b24));
-  border: 1px solid color-mix(in srgb, var(--dsw-alias-border-l2, rgba(128,128,128,.25)) 70%, var(--dsw-alias-bg-module-platform, #171b24));
-  font-size: 12px; line-height: 1.65; white-space: pre-wrap; word-break: break-word;
-  color: var(--dsw-alias-label-secondary, #b4b9c2);
+.dsh-set-nav:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,.07)); color: var(--dsw-alias-label-primary, #e8eaf0); }
+.dsh-set-nav:active { transform: scale(.98); }
+.dsh-set-nav.dsh-set-nav-on {
+  background: color-mix(in srgb, var(--dsh-set-accent) 15%, transparent);
+  color: var(--dsh-set-accent);
+  font-weight: 600;
 }
-.dsh-ud-changelog .dsh-ud-cl-head { color: var(--dsh-ud-accent); font-weight: 600; margin-bottom: 4px; }
-.dsh-ud-detail {
-  margin-top: 12px; max-height: 130px; overflow: auto;
-  padding: 8px 10px; border-radius: 8px;
-  background: color-mix(in srgb, #000 10%, var(--dsw-alias-bg-module-platform, #171b24));
-  border: 1px solid color-mix(in srgb, var(--dsw-alias-border-l2, rgba(128,128,128,.25)) 70%, var(--dsw-alias-bg-module-platform, #171b24));
-  font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-all;
-  color: var(--dsw-alias-label-secondary, #b4b9c2);
-  font-family: ui-monospace, Consolas, monospace;
+.dsh-set-content { flex: 1; min-width: 0; padding: 16px 18px; overflow-y: auto; display: flex; flex-direction: column; }
+.dsh-set-panel { display: none; flex-direction: column; min-height: 0; flex: 1; }
+.dsh-set-panel.dsh-set-panel-on { display: flex; }
+.dsh-set-panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.dsh-set-panel-title { font-size: 15px; font-weight: 700; letter-spacing: .03em; }
+.dsh-set-panel-sub { font-size: 11.5px; color: var(--dsw-alias-label-tertiary, #8a8f98); font-variant-numeric: tabular-nums; }
+/* 频道滑块：滑动药丸 */
+.dsh-set-channel { display: flex; align-items: center; gap: 14px; margin: 2px 0 12px; }
+.dsh-set-channel-label { font-size: 12px; letter-spacing: .04em; color: var(--dsw-alias-label-secondary, #aeb3bd); }
+.dsh-set-seg {
+  position: relative;
+  display: inline-flex; padding: 3px; gap: 2px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.28));
+  border-radius: 10px; background: var(--dsw-alias-bg-base, #171b24);
 }
-.dsh-ud-bar { margin-top: 14px; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--dsh-ud-accent) 22%, var(--dsw-alias-bg-module-platform, #171b24)); overflow: hidden; }
-.dsh-ud-bar-inner {
-  height: 100%; width: 40%;
-  background: var(--dsh-ud-accent);
-  border-radius: 3px;
-  animation: dsh-ud-slide 1.3s ease-in-out infinite;
+.dsh-set-seg-pill {
+  position: absolute; top: 3px; bottom: 3px; left: 3px;
+  width: calc(50% - 3px);
+  border-radius: 7px;
+  background: var(--dsh-set-accent);
+  box-shadow: 0 2px 6px rgba(77,107,254,.35);
+  transition: transform .22s cubic-bezier(.2,.7,.3,1);
 }
-@keyframes dsh-ud-slide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
-.dsh-ud-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
-.dsh-ud-btn {
+.dsh-set-seg[data-channel="next"] .dsh-set-seg-pill { transform: translateX(100%); }
+.dsh-set-seg-btn {
   -webkit-app-region: no-drag;
   appearance: none; border: none; cursor: pointer;
-  padding: 8px 20px; border-radius: 10px;
-  font-size: 13px; font-weight: 500; font-family: inherit;
-  transition: transform .08s ease, filter .12s ease, background .12s ease;
-}
-.dsh-ud-btn:active { transform: scale(.97); }
-.dsh-ud-btn-primary {
-  background: var(--dsh-ud-accent);
-  color: #fff;
-}
-.dsh-ud-btn-primary:hover { filter: brightness(1.08); }
-.dsh-ud-btn-ghost {
+  position: relative; z-index: 1;
+  padding: 5px 18px; border-radius: 7px;
+  font: inherit; font-size: 12px; font-weight: 500;
+  letter-spacing: .05em;
+  color: var(--dsw-alias-label-secondary, #aeb3bd);
   background: transparent;
-  color: var(--dsw-alias-label-secondary, #b4b9c2);
+  transition: color .16s ease;
+}
+.dsh-set-seg-btn.dsh-set-seg-on { color: #fff; }
+/* 版本列表 */
+.dsh-set-version-list {
+  flex: 1; min-height: 120px; overflow-y: auto;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.22));
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-base, #171b24);
+}
+.dsh-set-version-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; font-size: 12px;
+  transition: background .12s ease;
+}
+.dsh-set-version-row + .dsh-set-version-row { border-top: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.16)); }
+.dsh-set-version-row:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,.05)); }
+.dsh-set-version-name {
+  font-family: var(--ds-font-mono, ui-monospace, "Fragment Mono", Consolas, monospace);
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary, #e8eaf0); flex: 1; min-width: 0;
+}
+.dsh-set-version-tag { flex: none; font-size: 11px; padding: 2px 8px; border-radius: 6px; letter-spacing: .02em; }
+.dsh-set-version-tag.dsh-set-tag-current { background: color-mix(in srgb, #2ea043 18%, transparent); color: #34c56b; }
+.dsh-set-version-tag.dsh-set-tag-latest { background: color-mix(in srgb, var(--dsh-set-accent) 16%, transparent); color: var(--dsh-set-accent); }
+/* 底部静态状态栏：固定不动，不随状态变化产生布局跳动 */
+.dsh-set-version-foot {
+  flex: none;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  min-height: 34px; margin-top: 10px; padding: 6px 10px;
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-base, #171b24);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.22));
+}
+.dsh-set-version-foot-status {
+  flex: 1; min-width: 0;
+  font-size: 12px; line-height: 1.4;
+  color: var(--dsw-alias-label-tertiary, #8a8f98);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dsh-set-version-foot-status.dsh-set-foot-ok { color: #34c56b; }
+.dsh-set-version-foot-status.dsh-set-foot-new { color: var(--dsh-set-accent); font-weight: 500; }
+.dsh-set-version-foot-status.dsh-set-foot-err { color: #e45555; }
+.dsh-set-version-foot-actions { display: inline-flex; align-items: center; gap: 8px; flex: none; }
+/* 按钮 */
+.dsh-set-btn {
+  -webkit-app-region: no-drag;
+  appearance: none; border: none; cursor: pointer;
+  padding: 6px 14px; border-radius: 9px;
+  font: inherit; font-size: 12px; font-weight: 500;
+  letter-spacing: .03em;
+  transition: filter .14s ease, background .14s ease, transform .06s ease;
+}
+.dsh-set-btn:active { transform: scale(.97); }
+.dsh-set-btn-primary { background: var(--dsh-set-accent); color: #fff; }
+.dsh-set-btn-primary:hover { filter: brightness(1.08); }
+.dsh-set-btn-primary:disabled { opacity: .55; cursor: default; }
+.dsh-set-btn-ghost {
+  background: transparent; color: var(--dsw-alias-label-secondary, #b4b9c2);
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.3));
 }
-.dsh-ud-btn-ghost:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,.07)); }
+.dsh-set-btn-ghost:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,.07)); color: var(--dsw-alias-label-primary, #e8eaf0); }
+.dsh-set-btn-sm { padding: 3px 12px; font-size: 11.5px; }
+/* 通用设置 */
+.dsh-set-section {
+  padding: 14px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.22));
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-base, #171b24);
+  transition: border-color .15s ease;
+}
+.dsh-set-section:hover { border-color: var(--dsw-alias-border-l2, rgba(128,128,128,.34)); }
+.dsh-set-section + .dsh-set-section { margin-top: 12px; }
+.dsh-set-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.dsh-set-row-text { min-width: 0; }
+.dsh-set-row-title { font-size: 13px; font-weight: 600; letter-spacing: .03em; }
+.dsh-set-row-sub { font-size: 11.5px; color: var(--dsw-alias-label-tertiary, #8a8f98); margin-top: 7px; letter-spacing: .01em; line-height: 1.5; }
+/* 开关：带弹性动效 */
+.dsh-set-switch { position: relative; display: inline-block; flex: none; width: 40px; height: 23px; }
+.dsh-set-switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; z-index: 2; }
+.dsh-set-switch-track {
+  position: absolute; inset: 0; border-radius: 12px;
+  background: var(--dsw-alias-border-l2, rgba(128,128,128,.32));
+  transition: background .18s ease;
+  pointer-events: none;
+}
+.dsh-set-switch-track::after {
+  content: ""; position: absolute; top: 2px; left: 2px;
+  width: 19px; height: 19px; border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,.32);
+  transition: transform .2s cubic-bezier(.34,1.56,.64,1);
+}
+.dsh-set-switch input:checked + .dsh-set-switch-track { background: var(--dsh-set-accent); }
+.dsh-set-switch input:checked + .dsh-set-switch-track::after { transform: translateX(17px); }
+/* 余额插件设置：白色可折叠表单（收起时仍可看到下方填写项预览） */
+.dsh-set-subsection { margin-top: 16px; }
+.dsh-set-subsection-head {
+  -webkit-app-region: no-drag;
+  appearance: none; border: none; background: transparent; cursor: pointer;
+  width: 100%;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 10px; border-radius: 9px;
+  font: inherit; text-align: left;
+  transition: background .14s ease;
+}
+.dsh-set-subsection-head:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,.06)); }
+.dsh-set-subsection-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; font-weight: 600; letter-spacing: .05em;
+  color: var(--dsw-alias-label-secondary, #b4b9c2);
+}
+.dsh-set-subsection-title::before {
+  content: ""; width: 3px; height: 12px; border-radius: 2px;
+  background: linear-gradient(180deg, var(--dsh-set-accent), #8fa3ff);
+}
+.dsh-set-subsection-head .dsh-tb-action-caret {
+  color: var(--dsw-alias-label-tertiary, #8a8f98);
+  transition: transform .18s ease;
+}
+.dsh-set-subsection-head.dsh-set-subsection-on .dsh-tb-action-caret { transform: rotate(90deg); }
+/* 收起：完全隐藏（不留预览）；展开：显示完整表单 */
+.dsh-set-subsection-body {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height .22s cubic-bezier(.2,.7,.3,1);
+}
+.dsh-set-subsection-body.dsh-set-subsection-open { max-height: 520px; }
+/* 白色表单卡片（紧凑：小号控件 + 宽松间距，避免挤压感） */
+.dsh-set-subsection-inner {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: #ffffff;
+  border: 1px solid #e3e7f0;
+  border-radius: 10px;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, .08);
+}
+.dsh-tb-panel-muted { color: var(--dsw-alias-label-tertiary, #8a8f98); }
+
+/* ===== 计费表单（白色纸面质感：白底 + 浅灰输入框 + 品牌蓝焦点 + 峰谷配色） ===== */
+#dsh-settings-dialog .dsh-set-subsection-inner .dsh-tb-panel-muted { color: #5b6478; font-size: 11px; }
+#dsh-settings-dialog .dsh-tb-price-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+#dsh-settings-dialog .dsh-tb-price-select {
+  appearance: none; -webkit-appearance: none;
+  min-width: 128px; height: 26px; padding: 0 24px 0 8px;
+  border: 1px solid #d9dfeb;
+  border-radius: 8px;
+  background-color: #f7f9fc;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M2 3.5 L5 6.5 L8 3.5' fill='none' stroke='%234d6bfe' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  color: #1f2430;
+  font: inherit; font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: border-color .14s ease, box-shadow .14s ease;
+}
+#dsh-settings-dialog .dsh-tb-price-select:hover { border-color: color-mix(in srgb, #4d6bfe 55%, #d9dfeb); }
+#dsh-settings-dialog .dsh-tb-price-select:focus {
+  outline: none; border-color: #4d6bfe;
+  box-shadow: 0 0 0 3px rgba(77,107,254,.18);
+}
+#dsh-settings-dialog .dsh-tb-price-grid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1fr;
+  gap: 6px 8px;
+  align-items: center;
+}
+#dsh-settings-dialog .dsh-tb-price-grid > span {
+  font-size: 11px; letter-spacing: .03em; color: #5b6478;
+}
+#dsh-settings-dialog .dsh-tb-price-grid > span:nth-child(2) { color: #16a34a; font-weight: 600; }
+#dsh-settings-dialog .dsh-tb-price-grid > span:nth-child(3) { color: #d97706; font-weight: 600; }
+#dsh-settings-dialog .dsh-tb-price-input {
+  width: 100%; height: 26px; padding: 0 8px;
+  border: 1px solid #d9dfeb;
+  border-radius: 8px;
+  background: #f7f9fc;
+  color: #1f2430;
+  font: inherit; font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+  transition: border-color .14s ease, box-shadow .14s ease, background .14s ease;
+}
+#dsh-settings-dialog .dsh-tb-price-input:hover { border-color: color-mix(in srgb, #4d6bfe 45%, #d9dfeb); }
+#dsh-settings-dialog .dsh-tb-price-input:focus {
+  border-color: #4d6bfe;
+  box-shadow: 0 0 0 3px rgba(77,107,254,.18);
+  background: #ffffff;
+}
+#dsh-settings-dialog .dsh-tb-price-input::placeholder { color: #9aa3b5; }
+#dsh-settings-dialog .dsh-tb-price-peak-title {
+  margin-top: 10px;
+  font-size: 11px; letter-spacing: .03em;
+  color: #5b6478;
+}
+#dsh-settings-dialog .dsh-tb-price-peak {
+  margin-top: 6px;
+  display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+}
+#dsh-settings-dialog .dsh-tb-price-peak + .dsh-tb-price-peak { margin-top: 4px; }
+#dsh-settings-dialog .dsh-tb-peak-input {
+  width: 44px; height: 26px; flex: none; text-align: center; font-size: 11.5px;
+}
+#dsh-settings-dialog .dsh-tb-price-actions {
+  margin-top: 10px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+#dsh-settings-dialog .dsh-tb-price-status {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; color: #5b6478;
+}
+#dsh-settings-dialog .dsh-tb-price-status.dsh-tb-price-status-ok { color: #16a34a; font-weight: 600; }
+#dsh-settings-dialog .dsh-tb-price-status.dsh-tb-price-status-err { color: #dc2626; font-weight: 600; }
+#dsh-settings-dialog .dsh-tb-price-buttons { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+#dsh-settings-dialog .dsh-tb-price-btn {
+  -webkit-app-region: no-drag;
+  appearance: none; cursor: pointer;
+  height: 26px; padding: 0 12px; border-radius: 8px;
+  border: 1px solid #d9dfeb;
+  background: transparent; color: #334155;
+  font: inherit; font-size: 11.5px; font-weight: 500;
+  transition: background .14s ease, color .14s ease, transform .06s ease;
+}
+#dsh-settings-dialog .dsh-tb-price-btn:hover { background: #f1f5f9; color: #1f2430; }
+#dsh-settings-dialog .dsh-tb-price-btn:active { transform: scale(.97); }
+#dsh-settings-dialog .dsh-tb-price-btn.dsh-tb-price-btn-primary {
+  border: none;
+  background: linear-gradient(135deg, #4d6bfe, #6f8bff);
+  color: #fff;
+  box-shadow: 0 3px 10px rgba(77,107,254,.35);
+}
+#dsh-settings-dialog .dsh-tb-price-btn.dsh-tb-price-btn-primary:hover { filter: brightness(1.08); box-shadow: 0 4px 14px rgba(77,107,254,.42); }
 `;
+
+const PRICING_FORM_HTML = `
+  <div class="dsh-tb-price-head">
+    <span class="dsh-tb-panel-muted">模型</span>
+    <select class="dsh-tb-price-select" id="dsh-tb-price-model">
+      <option value="deepseek-v4-flash">deepseek-v4-flash</option>
+      <option value="deepseek-v4-pro">deepseek-v4-pro</option>
+    </select>
+  </div>
+  <div class="dsh-tb-price-grid">
+    <span></span><span>谷</span><span>峰</span>
+    <span>缓存命中</span>
+    <input class="dsh-tb-price-input" data-rate-scope="offPeak" data-rate-key="cacheHit" inputmode="decimal">
+    <input class="dsh-tb-price-input" data-rate-scope="peak" data-rate-key="cacheHit" inputmode="decimal">
+    <span>缓存未命中</span>
+    <input class="dsh-tb-price-input" data-rate-scope="offPeak" data-rate-key="input" inputmode="decimal">
+    <input class="dsh-tb-price-input" data-rate-scope="peak" data-rate-key="input" inputmode="decimal">
+    <span>输出</span>
+    <input class="dsh-tb-price-input" data-rate-scope="offPeak" data-rate-key="output" inputmode="decimal">
+    <input class="dsh-tb-price-input" data-rate-scope="peak" data-rate-key="output" inputmode="decimal">
+  </div>
+  <div class="dsh-tb-price-peak-title">峰谷时段（DeepSeek 多段，24 小时制）</div>
+  <div class="dsh-tb-price-peak">
+    <span class="dsh-tb-panel-muted">段1</span>
+    <input class="dsh-tb-price-input dsh-tb-peak-input" data-peak-index="0" data-peak-edge="start" inputmode="numeric" title="第 1 段开始（时）">
+    <span class="dsh-tb-panel-muted">–</span>
+    <input class="dsh-tb-price-input dsh-tb-peak-input" data-peak-index="0" data-peak-edge="end" inputmode="numeric" title="第 1 段结束（时）">
+    <span class="dsh-tb-panel-muted">时</span>
+  </div>
+  <div class="dsh-tb-price-peak">
+    <span class="dsh-tb-panel-muted">段2</span>
+    <input class="dsh-tb-price-input dsh-tb-peak-input" data-peak-index="1" data-peak-edge="start" inputmode="numeric" title="第 2 段开始（时）">
+    <span class="dsh-tb-panel-muted">–</span>
+    <input class="dsh-tb-price-input dsh-tb-peak-input" data-peak-index="1" data-peak-edge="end" inputmode="numeric" title="第 2 段结束（时）">
+    <span class="dsh-tb-panel-muted">时</span>
+  </div>
+  <div class="dsh-tb-price-actions">
+    <span class="dsh-tb-price-status" id="dsh-tb-price-status">读取中</span>
+    <span class="dsh-tb-price-buttons">
+      <button class="dsh-tb-price-btn" id="dsh-tb-price-reset" type="button">默认</button>
+      <button class="dsh-tb-price-btn dsh-tb-price-btn-primary" id="dsh-tb-price-save" type="button">保存</button>
+    </span>
+  </div>
+`;
+
+function ensureSettingsDialog() {
+  if (settingsDialogEl) return settingsDialogEl;
+  const style = document.createElement("style");
+  style.id = "dsh-settings-dialog-style";
+  style.textContent = SETTINGS_DIALOG_CSS;
+  document.head.appendChild(style);
+  settingsDialogEl = document.createElement("div");
+  settingsDialogEl.id = "dsh-settings-dialog";
+  settingsDialogEl.innerHTML = `
+    <div class="dsh-set-card">
+      <div class="dsh-set-head">
+        <svg class="dsh-set-mark" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd" aria-hidden="true"><path d="${OFFICIAL_MARK_PATH}"/></svg>
+        <div class="dsh-set-title">软件设置</div>
+        <button class="dsh-set-close" id="dsh-set-close" title="关闭" type="button">
+          <svg width="12" height="12" viewBox="0 0 12 12"><path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" stroke-width="1.2"/></svg>
+        </button>
+      </div>
+      <div class="dsh-set-body">
+        <div class="dsh-set-sidebar">
+          <button class="dsh-set-nav dsh-set-nav-on" data-panel="versions" type="button">Harness 版本</button>
+          <button class="dsh-set-nav" data-panel="general" type="button">通用</button>
+        </div>
+        <div class="dsh-set-content">
+          <section class="dsh-set-panel dsh-set-panel-on" data-panel="versions">
+            <div class="dsh-set-panel-head">
+              <div class="dsh-set-panel-title">Harness 版本</div>
+              <div class="dsh-set-panel-sub" id="dsh-set-current-version">当前版本 v—</div>
+            </div>
+            <div class="dsh-set-channel">
+              <span class="dsh-set-channel-label">版本频道</span>
+              <div class="dsh-set-seg" id="dsh-set-channel-seg" data-channel="latest">
+                <span class="dsh-set-seg-pill"></span>
+                <button class="dsh-set-seg-btn dsh-set-seg-on" data-channel="latest" type="button">Latest</button>
+                <button class="dsh-set-seg-btn" data-channel="next" type="button">Next</button>
+              </div>
+            </div>
+            <div class="dsh-set-version-list" id="dsh-set-version-list"></div>
+            <div class="dsh-set-version-foot">
+              <span class="dsh-set-version-foot-status" id="dsh-set-update-status">打开即自动检查更新</span>
+              <span class="dsh-set-version-foot-actions">
+                <button class="dsh-set-btn dsh-set-btn-primary dsh-set-btn-sm" id="dsh-set-notice-install" type="button" hidden>立即更新</button>
+                <button class="dsh-set-btn dsh-set-btn-ghost dsh-set-btn-sm" id="dsh-set-check-update" type="button">检查更新</button>
+              </span>
+            </div>
+          </section>
+          <section class="dsh-set-panel" data-panel="general">
+            <div class="dsh-set-section">
+              <div class="dsh-set-row">
+                <div class="dsh-set-row-text">
+                  <div class="dsh-set-row-title">余额插件</div>
+                  <div class="dsh-set-row-sub">在标题栏显示 DeepSeek 账户余额与扣费提示</div>
+                </div>
+                <label class="dsh-set-switch"><input type="checkbox" id="dsh-set-balance-plugin"><span class="dsh-set-switch-track"></span></label>
+              </div>
+              <div class="dsh-set-subsection" id="dsh-set-pricing-wrap">
+                <button class="dsh-set-subsection-head" id="dsh-set-pricing-toggle" type="button" aria-expanded="false">
+                  <span class="dsh-set-subsection-title">余额插件设置</span>
+                  <svg class="dsh-tb-action-caret" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                    <path d="M3 1.5 L6.5 5 L3 8.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+                <div class="dsh-set-subsection-body" id="dsh-set-pricing-body">
+                  <div class="dsh-set-subsection-inner">${PRICING_FORM_HTML}</div>
+                </div>
+              </div>
+            </div>
+            <div class="dsh-set-section">
+              <div class="dsh-set-row">
+                <div class="dsh-set-row-text">
+                  <div class="dsh-set-row-title">会话小票</div>
+                  <div class="dsh-set-row-sub">在余额详情中提供「打印小票」入口</div>
+                </div>
+                <label class="dsh-set-switch"><input type="checkbox" id="dsh-set-receipt"><span class="dsh-set-switch-track"></span></label>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(settingsDialogEl);
+
+  settingsDialogEl.querySelector("#dsh-set-close").addEventListener("click", () => closeSettingsDialog());
+  settingsDialogEl.addEventListener("pointerdown", (event) => {
+    if (event.target === settingsDialogEl) closeSettingsDialog();
+  });
+  settingsDialogEl.querySelectorAll(".dsh-set-nav").forEach((btn) => {
+    btn.addEventListener("click", () => selectSettingsPanel(btn.dataset.panel));
+  });
+  settingsDialogEl.querySelectorAll("#dsh-set-channel-seg .dsh-set-seg-btn").forEach((btn) => {
+    btn.addEventListener("click", () => setUpdateChannel(btn.dataset.channel));
+  });
+  settingsDialogEl.querySelector("#dsh-set-check-update").addEventListener("click", () => {
+    setUpdateFoot("正在检查更新…", "");
+    api.checkUpdate(false);
+  });
+  settingsDialogEl.querySelector("#dsh-set-notice-install").addEventListener("click", () => {
+    if (updateNoticeInfo) startInstallVersion(updateNoticeInfo.latest);
+  });
+  const balancePluginInput = settingsDialogEl.querySelector("#dsh-set-balance-plugin");
+  balancePluginInput.addEventListener("change", () => api.saveSettings({ balancePlugin: balancePluginInput.checked }));
+  const receiptInput = settingsDialogEl.querySelector("#dsh-set-receipt");
+  receiptInput.addEventListener("change", () => api.saveSettings({ receiptEnabled: receiptInput.checked }));
+  // 余额插件设置：白色可折叠表单（收起时保留填写项预览）；首次创建即绑定一次
+  const pricingToggle = settingsDialogEl.querySelector("#dsh-set-pricing-toggle");
+  const pricingBody = settingsDialogEl.querySelector("#dsh-set-pricing-body");
+  pricingToggle.addEventListener("click", () => {
+    const open = pricingBody.classList.contains("dsh-set-subsection-open");
+    pricingBody.classList.toggle("dsh-set-subsection-open", !open);
+    pricingToggle.classList.toggle("dsh-set-subsection-on", !open);
+    pricingToggle.setAttribute("aria-expanded", String(!open));
+    if (!open && pricingControls) pricingControls.refresh();
+  });
+  const pricingInner = pricingBody.querySelector(".dsh-set-subsection-inner");
+  if (!pricingControls) {
+    pricingControls = attachPricingForm(pricingInner);
+  }
+  return settingsDialogEl;
+}
+
+function selectSettingsPanel(panel) {
+  settingsPanelName = panel === "general" ? "general" : "versions";
+  settingsDialogEl.querySelectorAll(".dsh-set-nav").forEach((btn) => {
+    btn.classList.toggle("dsh-set-nav-on", btn.dataset.panel === settingsPanelName);
+  });
+  settingsDialogEl.querySelectorAll(".dsh-set-panel").forEach((sec) => {
+    sec.classList.toggle("dsh-set-panel-on", sec.dataset.panel === settingsPanelName);
+  });
+  if (settingsPanelName === "versions") refreshVersionList();
+  syncSettingsSwitches();
+}
+
+function setUpdateChannel(channel) {
+  if (channel !== "latest" && channel !== "next") return;
+  appSettings.updateChannel = channel;
+  api.saveSettings({ updateChannel: channel });
+  syncSettingsSwitches();
+  renderVersionList();
+}
+
+function openSettingsDialog() {
+  const dlg = ensureSettingsDialog();
+  dlg.classList.add("dsh-set-open");
+  selectSettingsPanel(settingsPanelName);
+  renderNoticeBanner();
+  // 每次打开都重新拉取计费价格表（保持与标题栏峰谷指示一致）
+  if (pricingControls) pricingControls.refresh();
+  // 打开设置自动检测更新（状态显示在底部固定栏，不弹窗）
+  setUpdateFoot("正在检查更新…", "");
+  api.checkUpdate(false);
+}
+
+function closeSettingsDialog() {
+  if (settingsDialogEl) settingsDialogEl.classList.remove("dsh-set-open");
+}
+
+function syncSettingsSwitches() {
+  if (!settingsDialogEl) return;
+  const balancePluginInput = settingsDialogEl.querySelector("#dsh-set-balance-plugin");
+  const receiptInput = settingsDialogEl.querySelector("#dsh-set-receipt");
+  if (balancePluginInput) balancePluginInput.checked = !!appSettings.balancePlugin;
+  if (receiptInput) receiptInput.checked = !!appSettings.receiptEnabled;
+  const seg = settingsDialogEl.querySelector("#dsh-set-channel-seg");
+  const channel = appSettings.updateChannel || "latest";
+  if (seg) seg.dataset.channel = channel;
+  settingsDialogEl.querySelectorAll("#dsh-set-channel-seg .dsh-set-seg-btn").forEach((btn) => {
+    btn.classList.toggle("dsh-set-seg-on", btn.dataset.channel === channel);
+  });
+}
+
+/** 底部固定状态栏：状态文字固定不动（无布局跳动）。 */
+function setUpdateFoot(text, cls = "", extra = null) {
+  if (!settingsDialogEl) return;
+  const statusEl = settingsDialogEl.querySelector("#dsh-set-update-status");
+  if (!statusEl) return;
+  statusEl.textContent = text;
+  statusEl.className = "dsh-set-version-foot-status";
+  if (cls) statusEl.classList.add(cls);
+  const installBtn = settingsDialogEl.querySelector("#dsh-set-notice-install");
+  if (installBtn) {
+    installBtn.hidden = !(cls === "dsh-set-foot-new" && extra);
+  }
+}
+
+function renderNoticeBanner() {
+  if (!settingsDialogEl) return;
+  if (updateNoticeInfo) {
+    setUpdateFoot(`发现新版本 v${updateNoticeInfo.latest}（当前 v${updateNoticeInfo.current}）`, "dsh-set-foot-new", true);
+  }
+}
+
+async function refreshVersionList() {
+  if (!settingsDialogEl) return;
+  const list = settingsDialogEl.querySelector("#dsh-set-version-list");
+  versionListData = await api.listVersions().catch(() => null);
+  if (!versionListData) {
+    list.innerHTML = `<div class="dsh-set-version-row" style="justify-content:center;color:var(--dsw-alias-label-tertiary,#8a8f98)">无法获取版本列表，请检查网络</div>`;
+    return;
+  }
+  renderVersionList();
+  const current = await api.getVersion().catch(() => null);
+  const cur = settingsDialogEl.querySelector("#dsh-set-current-version");
+  if (cur) cur.textContent = `当前版本 v${(current && current.dsh) || "—"}`;
+}
+
+function renderVersionList() {
+  if (!settingsDialogEl || !versionListData) return;
+  const list = settingsDialogEl.querySelector("#dsh-set-version-list");
+  const channel = appSettings.updateChannel || "latest";
+  const distTags = versionListData.distTags || {};
+  const latestTag = distTags.latest || null;
+  let versions = versionListData.versions || [];
+  if (channel === "latest" && latestTag) {
+    versions = versions.filter((v) => compareVersionsPreload(v, latestTag) <= 0);
+  }
+  if (versions.length === 0) {
+    list.innerHTML = `<div class="dsh-set-version-row" style="justify-content:center;color:var(--dsw-alias-label-tertiary,#8a8f98)">该频道暂无版本</div>`;
+    return;
+  }
+  api.getVersion().then((current) => {
+    const currentVersion = current && current.dsh ? current.dsh : null;
+    const highlight = channel === "latest" ? latestTag : (distTags.next || versions[0]);
+    const rows = versions.map((v) => {
+      const tags = [];
+      if (currentVersion && v === currentVersion) tags.push('<span class="dsh-set-version-tag dsh-set-tag-current">当前</span>');
+      if (highlight && v === highlight) tags.push('<span class="dsh-set-version-tag dsh-set-tag-latest">最新</span>');
+      const isCurrent = currentVersion && v === currentVersion;
+      const label = isCurrent ? "已安装" : "安装";
+      return `<div class="dsh-set-version-row">
+        <span class="dsh-set-version-name">v${escHtml(v)}</span>
+        ${tags.join("")}
+        <button class="dsh-set-btn dsh-set-btn-primary dsh-set-btn-sm" data-version="${escHtml(v)}" type="button" ${isCurrent ? "disabled" : ""}>${label}</button>
+      </div>`;
+    }).join("");
+    list.innerHTML = rows;
+    list.querySelectorAll("[data-version]").forEach((btn) => {
+      btn.addEventListener("click", () => startInstallVersion(btn.dataset.version));
+    });
+  }).catch(() => {
+    const rows = versions.map((v) => `<div class="dsh-set-version-row">
+      <span class="dsh-set-version-name">v${escHtml(v)}</span>
+      <button class="dsh-set-btn dsh-set-btn-primary dsh-set-btn-sm" data-version="${escHtml(v)}" type="button">安装</button>
+    </div>`).join("");
+    list.innerHTML = rows;
+    list.querySelectorAll("[data-version]").forEach((btn) => {
+      btn.addEventListener("click", () => startInstallVersion(btn.dataset.version));
+    });
+  });
+}
+
+/** 点击安装版本：主进程切换到启动页安装视图（真实进度 + 取消），完成后自动返回软件。 */
+function startInstallVersion(version) {
+  if (!version || installingVersion) return;
+  installingVersion = version;
+  api.installVersion(version);
+}
+
+/** 更新事件（新版本提示等）驱动设置弹窗底部状态栏。 */
+function handleDesktopUpdateEvent(evt) {
+  if (!evt || typeof evt !== "object") return;
+  if (evt.type === "notice") {
+    updateNoticeInfo = { current: evt.current, latest: evt.latest };
+    updateSettingsDot();
+    renderNoticeBanner();
+    return;
+  }
+  if (evt.type === "no-update") {
+    if (evt.detail) {
+      setUpdateFoot(evt.detail, "dsh-set-foot-err");
+    } else {
+      setUpdateFoot(`已是最新版本（v${evt.latest || evt.current}）`, "dsh-set-foot-ok");
+    }
+    return;
+  }
+}
+
+/** 更新状态（检查中/完成）驱动设置弹窗底部状态栏。 */
+let updateStatusState = { state: "idle", current: null, latest: null };
+function handleUpdateStatus(status) {
+  updateStatusState = status || {};
+  if (!settingsDialogEl) return;
+  const state = updateStatusState.state;
+  if (state === "checking") {
+    setUpdateFoot(`正在检查更新…（当前 v${updateStatusState.current}）`, "");
+  } else if (state === "available") {
+    // 有更新时由 notice 事件驱动底部"立即更新"，这里仅提示
+    setUpdateFoot(`发现新版本 v${updateStatusState.latest}`, "dsh-set-foot-new");
+  }
+}
 
 /**
  * 会话小票弹窗：超市小票风格（米白纸面 + 等宽字体 + 灰色虚线分割）。
@@ -1071,6 +1669,25 @@ const RECEIPT_DIALOG_CSS = `
   color: var(--dsw-alias-label-primary, #e8eaf0);
 }
 .dsh-rcpt-loading { text-align: center; color: var(--dsw-alias-label-tertiary, #8a8f98); padding: 14px 0; }
+/* 新会话空态：暂无小票记录 */
+.dsh-rcpt-empty { text-align: center; padding: 28px 10px 24px; }
+.dsh-rcpt-empty-icon {
+  display: flex; justify-content: center; margin-bottom: 12px;
+  color: var(--dsw-alias-label-tertiary, #8a8f98);
+}
+.dsh-rcpt-empty-title {
+  font-size: 14px; font-weight: 700; letter-spacing: 4px;
+  color: var(--dsw-alias-label-primary, #e8eaf0);
+}
+.dsh-rcpt-empty-sub {
+  margin-top: 10px; font-size: 11.5px; line-height: 1.9;
+  color: var(--dsw-alias-label-tertiary, #8a8f98);
+  letter-spacing: .5px;
+}
+.dsh-rcpt-empty-sep {
+  margin-top: 16px; font-size: 11px; letter-spacing: 3px;
+  color: var(--dsw-alias-border-l2, rgba(128,128,128,.32));
+}
 .dsh-rcpt-actions {
   display: flex; justify-content: center; gap: 8px;
   padding: 0 16px 12px;
@@ -1085,166 +1702,6 @@ const RECEIPT_DIALOG_CSS = `
 .dsh-rcpt-btn:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,.07)); color: var(--dsw-alias-label-primary, #e8eaf0); }
 `;
 
-const UD_ICONS = {
-  check: '<svg class="dsh-ud-icon" width="40" height="40" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#2ea043"/><path d="M7 12.5 L10.5 16 L17 8.5" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  warn: '<svg class="dsh-ud-icon" width="40" height="40" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#d97706"/><path d="M12 7 v6 M12 16.4 v.01" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg>',
-  error: '<svg class="dsh-ud-icon" width="40" height="40" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#e5484d"/><path d="M8 8 L16 16 M16 8 L8 16" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg>',
-  upgrade: '<svg class="dsh-ud-icon dsh-ud-icon-accent" width="40" height="40" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="currentColor"/><path d="M12 5.6 L16.6 10.5 H13.6 V17.4 H10.4 V10.5 H7.4 Z" fill="#fff"/></svg>',
-};
-
-function ensureUpdateDialog() {
-  if (document.getElementById("dsh-update-dialog")) return document.getElementById("dsh-update-dialog");
-  const style = document.createElement("style");
-  style.id = "dsh-update-dialog-style";
-  style.textContent = UPDATE_DIALOG_CSS;
-  document.head.appendChild(style);
-
-  const dlg = document.createElement("div");
-  dlg.id = "dsh-update-dialog";
-  dlg.innerHTML = `
-    <div class="dsh-ud-card">
-      <div class="dsh-ud-head">
-        <svg class="dsh-ud-mark" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd" aria-hidden="true"><path d="${OFFICIAL_MARK_PATH}"/></svg>
-        <div class="dsh-ud-title" id="dsh-ud-title">检查更新</div>
-        <button class="dsh-ud-close" id="dsh-ud-close" title="关闭" type="button">
-          <svg width="12" height="12" viewBox="0 0 12 12"><path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" stroke-width="1.2"/></svg>
-        </button>
-      </div>
-      <div class="dsh-ud-body" id="dsh-ud-body"></div>
-    </div>`;
-  document.body.appendChild(dlg);
-  dlg.querySelector("#dsh-ud-close").addEventListener("click", () => api.updateAction("close"));
-  return dlg;
-}
-
-/** 弹窗状态渲染：返回 { body, title, closable }。 */
-function renderUpdateState(evt) {
-  const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  switch (evt.type) {
-    case "checking":
-      return {
-        title: "检查更新",
-        closable: false,
-        body: `<div class="dsh-ud-row">
-          <div class="dsh-ud-spinner"></div>
-          <div><div class="dsh-ud-msg">正在检查更新…</div><div class="dsh-ud-sub">当前版本 v${esc(evt.current)}</div></div>
-        </div>`,
-      };
-    case "up-to-date":
-      return {
-        title: "检查更新",
-        closable: true,
-        body: `<div class="dsh-ud-row">
-          ${UD_ICONS.check}
-          <div><div class="dsh-ud-msg">已是最新版本</div><div class="dsh-ud-sub">当前版本 v${esc(evt.current)}，官方最新 v${esc(evt.latest)}</div></div>
-        </div>
-        <div class="dsh-ud-actions"><button class="dsh-ud-btn dsh-ud-btn-primary" data-act="close">完成</button></div>`,
-      };
-    case "check-failed":
-      return {
-        title: "检查更新",
-        closable: true,
-        body: `<div class="dsh-ud-row">
-          ${UD_ICONS.warn}
-          <div><div class="dsh-ud-msg">检查更新失败</div><div class="dsh-ud-sub">${esc(evt.detail)}</div></div>
-        </div>
-        <div class="dsh-ud-actions">
-          <button class="dsh-ud-btn dsh-ud-btn-ghost" data-act="close">关闭</button>
-          <button class="dsh-ud-btn dsh-ud-btn-primary" data-act="retry-check">重试</button>
-        </div>`,
-      };
-    case "available":
-      return {
-        title: "发现新版本",
-        closable: true,
-        body: `<div class="dsh-ud-row">
-          ${UD_ICONS.upgrade}
-          <div><div class="dsh-ud-msg">发现新版本 v${esc(evt.latest)}</div><div class="dsh-ud-sub">当前版本 v${esc(evt.current)}</div></div>
-        </div>
-        <div class="dsh-ud-versions">
-          <span class="dsh-ud-vtag">v${esc(evt.current)}</span>
-          <span class="dsh-ud-arrow">→</span>
-          <span class="dsh-ud-vtag dsh-ud-vtag-new">v${esc(evt.latest)}</span>
-        </div>
-        <div class="dsh-ud-changelog" id="dsh-ud-changelog">
-          <div class="dsh-ud-cl-head">更新说明</div><span class="dsh-ud-cl-body">正在加载…</span>
-        </div>
-        <div class="dsh-ud-actions">
-          <button class="dsh-ud-btn dsh-ud-btn-ghost" data-act="cancel">取消</button>
-          <button class="dsh-ud-btn dsh-ud-btn-primary" data-act="confirm">立即更新</button>
-        </div>`,
-      };
-    case "updating":
-      return {
-        title: "正在更新",
-        closable: false,
-        body: `<div class="dsh-ud-row">
-          <div class="dsh-ud-spinner"></div>
-          <div><div class="dsh-ud-msg">正在更新…</div><div class="dsh-ud-sub">正在下载并安装 v${esc(evt.latest)}，请稍候…</div></div>
-        </div>
-        <div class="dsh-ud-bar"><div class="dsh-ud-bar-inner"></div></div>`,
-      };
-    case "update-failed":
-      return {
-        title: "更新失败",
-        closable: true,
-        body: `<div class="dsh-ud-row">
-          ${UD_ICONS.error}
-          <div><div class="dsh-ud-msg">更新失败</div><div class="dsh-ud-sub">${evt.restored === false ? "旧版本恢复失败" : "已恢复旧版本运行"}</div></div>
-        </div>
-        <div class="dsh-ud-detail">${esc(evt.detail)}</div>
-        <div class="dsh-ud-actions">
-          <button class="dsh-ud-btn dsh-ud-btn-ghost" data-act="close">关闭</button>
-          <button class="dsh-ud-btn dsh-ud-btn-primary" data-act="retry">重试</button>
-        </div>`,
-      };
-    case "success":
-      return {
-        title: "更新完成",
-        closable: true,
-        body: `<div class="dsh-ud-row">
-          ${UD_ICONS.check}
-          <div><div class="dsh-ud-msg">更新完成</div><div class="dsh-ud-sub">已从 v${esc(evt.current)} 切换到 v${esc(evt.latest)}</div></div>
-        </div>
-        <div class="dsh-ud-actions"><button class="dsh-ud-btn dsh-ud-btn-primary" data-act="close">完成</button></div>`,
-      };
-    default:
-      return null;
-  }
-}
-
-function handleUpdateEvent(evt) {
-  if (!evt || typeof evt !== "object") return;
-  if (evt.type === "available-changelog") {
-    const box = document.getElementById("dsh-ud-changelog");
-    if (!box) return;
-    const body = box.querySelector(".dsh-ud-cl-body");
-    if (evt.changelog) {
-      const head = box.querySelector(".dsh-ud-cl-head");
-      if (head) head.textContent = `更新说明（${evt.changelog.source} · ${evt.changelog.tag}）`;
-      body.textContent = evt.changelog.body;
-    } else {
-      box.style.display = "none";
-    }
-    return;
-  }
-  if (evt.type === "close") {
-    const dlg = document.getElementById("dsh-update-dialog");
-    if (dlg) dlg.classList.remove("dsh-ud-open");
-    return;
-  }
-  const view = renderUpdateState(evt);
-  if (!view) return;
-  const dlg = ensureUpdateDialog();
-  dlg.querySelector("#dsh-ud-title").textContent = view.title;
-  dlg.querySelector("#dsh-ud-close").style.display = view.closable ? "" : "none";
-  const body = dlg.querySelector("#dsh-ud-body");
-  body.innerHTML = view.body;
-  body.querySelectorAll("[data-act]").forEach((btn) => {
-    btn.addEventListener("click", () => api.updateAction(btn.dataset.act));
-  });
-  dlg.classList.add("dsh-ud-open");
-}
 
 // ---------- 会话小票弹窗 ----------
 
@@ -1340,6 +1797,19 @@ function renderReceipt(data) {
   return lines.join("");
 }
 
+/** 新会话空态：暂无小票记录（纸面小票风格）。 */
+const RCPT_EMPTY_HTML = `
+  <div class="dsh-rcpt-empty">
+    <div class="dsh-rcpt-empty-icon">
+      <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>
+      </svg>
+    </div>
+    <div class="dsh-rcpt-empty-title">暂无小票记录</div>
+    <div class="dsh-rcpt-empty-sub">当前会话还没有产生对话记录<br/>发送第一条消息后，即可在此打印小票</div>
+    <div class="dsh-rcpt-empty-sep">- - - - - - - - - - - - - - -</div>
+  </div>`;
+
 function openReceipt() {
   const dlg = ensureReceiptDialog();
   const body = dlg.querySelector("#dsh-rcpt-body");
@@ -1356,11 +1826,18 @@ function openReceipt() {
       return res.json();
     })
     .then((data) => {
-      body.innerHTML = renderReceipt(data);
+      // 新会话（还没有任何对话记录）：展示空态，不打印空白小票
+      const models = Array.isArray(data && data.models) ? data.models : [];
+      const totals = (data && data.totals) || {};
+      const hasRecords = models.length > 0
+        || Number(totals.calls) > 0
+        || Number(totals.tokens) > 0
+        || Number(totals.cost) > 0;
+      body.innerHTML = hasRecords ? renderReceipt(data) : RCPT_EMPTY_HTML;
     })
     .catch((error) => {
       const message = String(error && error.message ? error.message : error);
-      body.innerHTML = `<div class="dsh-rcpt-loading">${message === "HTTP 404" ? "暂无会话数据，请先发起对话" : `小票生成失败：${message}`}</div>`;
+      body.innerHTML = message === "HTTP 404" ? RCPT_EMPTY_HTML : `<div class="dsh-rcpt-loading">小票生成失败：${message}</div>`;
     });
 }
 
@@ -2004,6 +2481,22 @@ html.dsh-splash-theme-light .dsh-splash-global-pill {
 .dsh-splash-log-copy:hover,
 .dsh-splash-retry:hover { background: var(--sp-hover); color: var(--sp-text-1); }
 
+/* 版本安装视图：取消 / 返回操作行 */
+.dsh-splash-install-actions {
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  margin-top: 14px;
+}
+.dsh-splash-install-actions[hidden] { display: none; }
+.dsh-splash-install-actions .dsh-splash-btn {
+  min-width: 108px;
+}
+.dsh-splash-btn.dsh-splash-btn-danger {
+  background: var(--sp-danger-soft);
+  border: 1px solid color-mix(in srgb, var(--sp-danger) 45%, transparent);
+  color: var(--sp-danger);
+}
+.dsh-splash-btn.dsh-splash-btn-danger:hover { filter: brightness(1.08); }
+
 /* 启动页只保留必要信息；状态细节和辅助文案不参与布局。 */
 .dsh-splash-page-sub,
 .dsh-splash-next-label { display: none !important; }
@@ -2248,6 +2741,10 @@ function initSplash() {
               </div>
               <div class="dsh-splash-log-scroll" id="dsh-splash-log-scroll"></div>
             </div>
+            <div class="dsh-splash-install-actions" id="dsh-splash-install-actions" hidden>
+              <button class="dsh-splash-btn dsh-splash-btn-danger" id="dsh-splash-cancel-install" type="button" hidden>取消安装</button>
+              <button class="dsh-splash-btn" id="dsh-splash-return-app" type="button" hidden>返回软件</button>
+            </div>
           </section>
 
           <section class="dsh-splash-page" data-page="ready">
@@ -2269,6 +2766,14 @@ function initSplash() {
   const webBackground = root.querySelector("#dsh-splash-web-bg");
   if (webBackground) {
     webBackground.addEventListener("load", () => webBackground.classList.add("dsh-splash-web-bg-ready"), { once: true });
+    // 首帧先展示纯色启动页（logo/进度条），web 背景延迟加载避免拖慢首帧渲染
+    const splashBgSrc = webBackground.getAttribute("src");
+    webBackground.removeAttribute("src");
+    setTimeout(() => {
+      if (webBackground && webBackground.isConnected && !webBackground.getAttribute("src")) {
+        webBackground.setAttribute("src", splashBgSrc);
+      }
+    }, 600);
   }
   const status = root.querySelector("#dsh-splash-status");
   const track = root.querySelector("#dsh-splash-track");
@@ -2439,6 +2944,15 @@ function initSplash() {
       barRow.hidden = false;
       logOuter.classList.add("dsh-splash-log-on");
       retryInstall.hidden = payload.installError !== true;
+      // 版本安装视图：安装中显示"取消安装"，失败/取消且无法恢复时显示"返回软件"
+      if (pendingInstallVersionLocal) {
+        installActionsRow.hidden = false;
+        cancelInstallBtn.hidden = payload.installError === true;
+        cancelInstallBtn.disabled = payload.installError === true;
+        returnAppBtn.hidden = payload.installError !== true;
+      } else {
+        installActionsRow.hidden = true;
+      }
       return;
     }
     if (payload.page === "ready") {
@@ -2510,6 +3024,11 @@ function initSplash() {
   });
   retryInstall.addEventListener("click", () => {
     retryInstall.hidden = true;
+    if (pendingInstallVersionLocal) {
+      // 版本安装失败重试：重新走版本安装流程
+      api.installVersion(pendingInstallVersionLocal);
+      return;
+    }
     if (customInstall) {
       const dir = installPath.value.trim();
       if (dir !== "") api.startRuntimeInstall({ mode: "custom", dir });
@@ -2532,6 +3051,19 @@ function initSplash() {
     } catch { /* ignore */ }
   });
   setInstallSubtitle("global");
+  // 版本安装视图：取消 / 返回
+  const cancelInstallBtn = root.querySelector("#dsh-splash-cancel-install");
+  const returnAppBtn = root.querySelector("#dsh-splash-return-app");
+  const installActionsRow = root.querySelector("#dsh-splash-install-actions");
+  cancelInstallBtn.addEventListener("click", () => {
+    cancelInstallBtn.disabled = true;
+    cancelInstallBtn.textContent = "正在取消…";
+    api.cancelInstall();
+  });
+  returnAppBtn.addEventListener("click", () => {
+    returnAppBtn.disabled = true;
+    api.returnToApp();
+  });
   // 已安装过（--dsh-boot-resume=1）：启动页直接进入“正在启动”视图（logo + 状态 + 进度条），
   // 由 booting 事件驱动；首次运行则从环境检测向导开始。
   const bootResume = (process.argv || []).some((a) => a === "--dsh-boot-resume=1");
@@ -2544,6 +3076,26 @@ function initSplash() {
   } else {
     setPage("detect");
   }
+  // 版本安装模式：主进程会在 loadURL 后 400ms 再发送 installing 事件；
+  // 这里先主动查询并切换到安装视图（显示版本号 + 进度 + 取消按钮）
+  api.getPendingInstall().then((version) => {
+    if (!version || !root.isConnected) return;
+    pendingInstallVersionLocal = String(version);
+    setPage("installing");
+    installTitle.textContent = `正在安装 DeepSeek Harness v${pendingInstallVersionLocal}…`;
+    installSub.textContent = "";
+    barRow.hidden = false;
+    logOuter.classList.add("dsh-splash-log-on");
+    retryInstall.hidden = true;
+    installActionsRow.hidden = false;
+    cancelInstallBtn.hidden = false;
+    cancelInstallBtn.disabled = false;
+    cancelInstallBtn.textContent = "取消安装";
+  }).catch(() => {});
+  // 启动页 DOM 已渲染完成，通知主进程立即展示窗口（不等 did-finish-load / iframe 慢子资源）
+  try {
+    ipcRenderer.send("dsh:splash-ready");
+  } catch { /* ignore */ }
 }
 
 /** 读取 DSH 主题底色，估算明暗并上报主进程（供下次启动画面跟随）。 */
@@ -2589,8 +3141,9 @@ function boot() {
       return;
     }
     injectTitlebar();
-    // 自绘更新弹窗事件监听（挂载一次；弹窗 DOM 按需创建）
-    ipcRenderer.on("dsh:update-event", (_event, evt) => handleUpdateEvent(evt));
+    // 设置弹窗更新事件监听（新版本提示 / 安装进度 / 安装结果）与状态监听
+    ipcRenderer.on("dsh:update-event", (_event, evt) => handleDesktopUpdateEvent(evt));
+    ipcRenderer.on("dsh:update-status", (_event, status) => handleUpdateStatus(status));
     // 通知主进程：本页面 preload 已就绪（用于更新完成后重载页面的握手）
     ipcRenderer.send("dsh:renderer-ready");
     // 上报应用主题给主进程（持久化，供下次启动画面跟随主题）
@@ -2613,16 +3166,27 @@ const api = {
     ipcRenderer.on("dsh:win-maximized", listener);
     return () => ipcRenderer.removeListener("dsh:win-maximized", listener);
   },
-  /** silent=true 时只更新按钮状态不弹窗（启动时自动检查）；false 打开自绘更新弹窗 */
+  /** 触发一次静默更新检查（设置弹窗"检查更新"按钮使用） */
   checkUpdate: (silent) => ipcRenderer.send("dsh:check-update", !!silent),
   onUpdateStatus: (cb) => {
     const listener = (_event, status) => cb(status);
     ipcRenderer.on("dsh:update-status", listener);
     return () => ipcRenderer.removeListener("dsh:update-status", listener);
   },
-  /** 更新弹窗内用户操作：confirm / cancel / retry / retry-check / close */
-  updateAction: (action) => ipcRenderer.send("dsh:update-action", action),
   getVersion: () => ipcRenderer.invoke("dsh:get-version"),
+  getSettings: () => ipcRenderer.invoke("dsh:get-settings"),
+  saveSettings: (patch) => ipcRenderer.send("dsh:save-settings", patch),
+  onSettingsChanged: (cb) => {
+    const listener = (_event, settings) => cb(settings);
+    ipcRenderer.on("dsh:settings-changed", listener);
+    return () => ipcRenderer.removeListener("dsh:settings-changed", listener);
+  },
+  listVersions: () => ipcRenderer.invoke("dsh:list-versions"),
+  installVersion: (version) => ipcRenderer.send("dsh:install-version", version),
+  getPendingInstall: () => ipcRenderer.invoke("dsh:get-pending-install"),
+  cancelInstall: () => ipcRenderer.send("dsh:cancel-install"),
+  returnToApp: () => ipcRenderer.invoke("dsh:return-to-app"),
+  reloadAfterUpdate: () => ipcRenderer.invoke("dsh:reload-after-update"),
   chooseBootMode: (mode) => ipcRenderer.send("dsh:boot-choice", mode),
   chooseRuntimeDir: () => ipcRenderer.invoke("dsh:choose-runtime-dir"),
   startRuntimeInstall: (dir) => ipcRenderer.send("dsh:runtime-install", dir),
