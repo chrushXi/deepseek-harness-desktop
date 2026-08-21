@@ -5,6 +5,9 @@ DeepSeekHarness的桌面版，兼容有或者没有Harness的用户，并且    
 > 界面即官方 `dsh --profile web` 前端，功能与网页版完全一致；本应用只是把「Node 运行时 + dsh + 前端」打包成一个桌面程序，并加上原生窗口与增强插件。
 
 ---
+## 下载与发布（GitHub Releases）
+
+- [前往Release下载](https://github.com/chrushXi/deepseek-harness-desktop/releases/tag/v0.2.4)
 
 ## 特色功能
 
@@ -117,9 +120,6 @@ npm run dist
 - `dist/DeepSeekHarness-Setup-<version>-x64.exe` —— NSIS 安装版：可自选安装目录，自动创建桌面/开始菜单快捷方式，卸载干净。
 - `dist/win-unpacked/` —— 免安装的完整目录（双击 `DeepSeek Harness.exe` 即可运行，用于快速分发/内测）。
 
-## 下载与发布（GitHub Releases）
-
-- [前往Release下载](https://github.com/chrushXi/deepseek-harness-desktop/releases/tag/v0.2.4)
 
 ## 数据与日志
 
