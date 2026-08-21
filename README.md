@@ -22,10 +22,11 @@ DeepSeekHarness的桌面版，兼容有或者没有Harness的用户，并且    
 
 - 标题栏右侧常驻显示 **DeepSeek 账户余额**（可用余额 = 官方余额 − 本地待扣费），扣费时有金额变动动画。
 - 缓存未命中产生暴击，命中缓存正常扣费
-  <img width="171" height="43" alt="屏幕截图 2026-08-21 153801" src="https://github.com/user-attachments/assets/957737cd-d848-4826-91ff-e84b33d4c361" />
+  <img width="213" height="42" alt="屏幕截图 2026-08-21 152937" src="https://github.com/user-attachments/assets/074ffb18-b563-4e57-a378-61af28ea6046" />
+  <img width="171" height="43" alt="屏幕截图 2026-08-21 153801" src="https://github.com/user-attachments/assets/ce02c95e-0895-4626-a085-69a523a602dd" />
 
 - **右键余额** → 打开**余额详情面板**：可用余额 / 赠送余额 / 峰谷时段 / 打印小票。
-  <img width="283" height="207" alt="屏幕截图 2026-08-20 214003" src="https://github.com/user-attachments/assets/7de3b1bb-f8d1-4bd4-8c69-c279c15d5e43" />
+    <img width="283" height="207" alt="屏幕截图 2026-08-20 214003" src="https://github.com/user-attachments/assets/7de3b1bb-f8d1-4bd4-8c69-c279c15d5e43" />
 
 
 ### 🧾 会话小票
