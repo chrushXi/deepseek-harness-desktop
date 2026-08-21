@@ -18,7 +18,7 @@ DeepSeekHarness的桌面版，兼容有或者没有Harness的用户，并且    
 
 ### 💰 余额监控 + 峰谷计费
 
-在这里要感谢余额插件制作者@wssfk12138的余额插件，我在此加入了改动并融合进了本软件当中。 项目地址：<https://github.com/wssfk12138/dsh-damage-pulse>
+在这里要感谢余额插件制作者[@wssfk12138](https://github.com/wssfk12138)的余额插件，我在此加入了改动并融合进了本软件当中。 项目地址：[dsh-damage-pulse](https://github.com/wssfk12138/dsh-damage-pulse)
 
 - 标题栏右侧常驻显示 **DeepSeek 账户余额**（可用余额 = 官方余额 − 本地待扣费），扣费时有金额变动动画。
 - 缓存未命中产生暴击，命中缓存正常扣费
@@ -119,7 +119,7 @@ npm run dist
 
 ## 下载与发布（GitHub Releases）
 
-- 
+- [前往Release下载](https://github.com/chrushXi/deepseek-harness-desktop/releases/tag/v0.2.4)
 
 ## 数据与日志
 
