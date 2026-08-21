@@ -1,13 +1,13 @@
 # DeepSeek Harness Desktop
 
-DeepSeekHarness的桌面版，兼容有或者没有Harness的用户，并且     **支持软件内更新Harness**   ，来保证软件的实用性和适配性。
+DeepSeekHarness的桌面版，兼容有或者没有Harness的用户，并且     **支持软件内更新Harness与安装其他插件**   ，来保证软件的实用性和适配性。
 
 > 界面即官方 `dsh --profile web` 前端，功能与网页版完全一致；本应用只是把「Node 运行时 + dsh + 前端」打包成一个桌面程序，并加上原生窗口与增强插件。
 
 ---
 ## 下载与发布（GitHub Releases）
 
-- [前往Release下载](https://github.com/chrushXi/deepseek-harness-desktop/releases/tag/v0.2.4)
+- [前往Release下载](https://github.com/chrushXi/deepseek-harness-desktop-init/releases)
 
 ## 特色功能
 
