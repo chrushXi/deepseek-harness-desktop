@@ -395,6 +395,97 @@ function broadcastSettings() {
   }
 }
 
+// ---------- dsh 命令行（dsh.cmd + 用户 PATH） ----------
+/** dsh 命令启动器目录：%APPDATA%\DeepSeek Harness\bin（与安装目录无关，稳定）。 */
+function cliShimDir() {
+  return path.join(app.getPath("userData"), "bin");
+}
+function cliShimPath() {
+  return path.join(cliShimDir(), "dsh.cmd");
+}
+/** 与 buildDshWebLaunch 一致：优先本机 Node，其次捆绑 Node，最后交给 PATH。 */
+function dshCliNodeExe() {
+  const useNativeNode = (runtimeMode === "native" || runtimeMode === "global")
+    && nativeRuntime && nativeRuntime.localNodeReady
+    && nativeRuntime.nodePath && fs.existsSync(nativeRuntime.nodePath);
+  if (useNativeNode) return nativeRuntime.nodePath;
+  if (NODE_EXE && fs.existsSync(NODE_EXE)) return NODE_EXE;
+  return "node";
+}
+/** 写入 dsh.cmd 启动器（调用捆绑/本机 node 执行 dsh 的 lib/bin.js）。 */
+function writeDshCliShim() {
+  try {
+    const probe = probeManagedDshRuntime();
+    if (!probe.ready || !probe.binPath) return false;
+    const dir = cliShimDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const nodeExe = dshCliNodeExe();
+    const content = `@echo off\r\n"${nodeExe}" "${probe.binPath}" %*\r\n`;
+    fs.writeFileSync(cliShimPath(), content, "utf8");
+    log(`dsh cli shim written: ${cliShimPath()} (node=${nodeExe})`);
+    return true;
+  } catch (error) {
+    log(`write dsh cli shim failed: ${error.message}`);
+    return false;
+  }
+}
+/**
+ * 安装完成后把 dsh 加入用户 PATH（HKCU\Environment），并广播环境变更。
+ * 幂等：已存在则跳过；失败不影响主流程。
+ */
+function ensureDshCliOnPath() {
+  return new Promise((resolve) => {
+    try {
+      if (!writeDshCliShim()) {
+        resolve(false);
+        return;
+      }
+    } catch (error) {
+      log(`dsh cli shim error: ${error.message}`);
+      resolve(false);
+      return;
+    }
+    const binDir = cliShimDir();
+    const psFile = path.join(app.getPath("temp"), `dsh-cli-path-${Date.now()}.ps1`);
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      `$binDir = '${binDir.replace(/'/g, "''")}'`,
+      "$key = 'HKCU:\\Environment'",
+      "$p = (Get-ItemProperty -Path $key -Name Path -ErrorAction SilentlyContinue).Path",
+      "if (-not $p) { $p = '' }",
+      "$parts = @($p -split ';' | Where-Object { $_ -ne '' })",
+      "$exists = $false",
+      "foreach ($part in $parts) { if ($part.Trim() -ieq $binDir) { $exists = $true; break } }",
+      "if (-not $exists) {",
+      "  $parts += $binDir",
+      "  Set-ItemProperty -Path $key -Name Path -Value ($parts -join ';') -Type ExpandString",
+      "}",
+      "try {",
+      "  Add-Type -Namespace Win32 -Name NativeEnv -MemberDefinition '[DllImport(\"user32.dll\", SetLastError = true, CharSet = CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'",
+      "  [Win32.NativeEnv]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 0x0002, 5000, [ref]([UIntPtr]::Zero)) | Out-Null",
+      "} catch { }",
+      "Write-Output 'OK'",
+    ].join("\r\n");
+    try {
+      fs.writeFileSync(psFile, script, "utf8");
+    } catch (error) {
+      log(`write dsh cli ps failed: ${error.message}`);
+      resolve(false);
+      return;
+    }
+    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", psFile], { windowsHide: true }, (error) => {
+      try { fs.rmSync(psFile, { force: true }); } catch { /* ignore */ }
+      if (error) {
+        log(`ensure dsh cli path failed: ${error.message}`);
+        resolve(false);
+        return;
+      }
+      log(`dsh cli path ensured: ${binDir}`);
+      resolve(true);
+    });
+  });
+}
+
 // ---------- 版本 ----------
 function bundledDshVersion() {
   const managed = probeManagedDshRuntime();
@@ -1736,6 +1827,8 @@ async function installVersionWithSplash(win, version) {
         saveBootChoice(currentBootChoice(dshLaunchVersion));
         pendingBootUrl = `http://127.0.0.1:${newPort}`;
         cleanupManagedDshBackup(installResult);
+        // 版本切换后刷新 dsh 命令行（启动器指向当前 dsh 版本）
+        ensureDshCliOnPath().catch((err) => log(`ensure dsh cli after update failed: ${err.message}`));
         sendBoot(win, { page: "installing", installing: true, stage: "安装完成，正在返回软件…", percent: 100 });
         await delay(600);
         if (!win.isDestroyed()) {
@@ -2152,6 +2245,8 @@ function registerIpc() {
         const ok = await ensureGlobalRuntime(win);
         if (!ok) throw new Error("DeepSeek Harness 安装失败");
         saveBootChoice(currentBootChoice(dshLaunchVersion));
+        // 安装完成即把 dsh 加入命令行 PATH（可 cmd/终端直接使用 dsh）
+        ensureDshCliOnPath().catch((err) => log(`ensure dsh cli after install failed: ${err.message}`));
         // 安装完成即止：不在此拉起服务，等用户点击"开始使用"后再启动
         sendBoot(win, {
           page: "ready",
@@ -2188,6 +2283,8 @@ function registerIpc() {
         return;
       }
       saveBootChoice(currentBootChoice(dshLaunchVersion));
+      // 安装完成即把 dsh 加入命令行 PATH（可 cmd/终端直接使用 dsh）
+      ensureDshCliOnPath().catch((err) => log(`ensure dsh cli after custom install failed: ${err.message}`));
       // 安装完成即止：不在此拉起服务，等用户点击"开始使用"后再启动
       sendBoot(win, {
         page: "ready",
@@ -2235,6 +2332,8 @@ function registerIpc() {
         const ok = await ensureGlobalRuntime(win);
         if (!ok) throw new Error("DeepSeek Harness 安装失败");
         saveBootChoice(currentBootChoice(dshLaunchVersion));
+        // 安装完成即把 dsh 加入命令行 PATH（可 cmd/终端直接使用 dsh）
+        ensureDshCliOnPath().catch((err) => log(`ensure dsh cli after install failed: ${err.message}`));
         // 安装完成即止：不在此拉起服务，等用户点击"开始使用"后再启动
         sendBoot(win, {
           page: "ready",
@@ -2326,6 +2425,8 @@ app.whenReady().then(async () => {
     const bootable = (runtimeMode === "global" || runtimeMode === "native") ? (nativeOk || portableOk) : portableOk;
     if (bootable) {
       log("saved boot choice found, skipping detection wizard");
+      // 已安装环境：刷新 dsh 命令行（兼容升级/移动安装目录后启动器指向失效的情况）
+      ensureDshCliOnPath().catch((err) => log(`ensure dsh cli at startup failed: ${err.message}`));
       sendBoot(win, {
         page: "booting",
         stage: runtimeMode === "global" || runtimeMode === "native"

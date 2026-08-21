@@ -40,6 +40,12 @@ DeepSeekHarness的桌面版，兼容有或者没有Harness的用户，并且    
 
 - 可在「软件设置 → 通用 → **会话小票**」中关闭该入口（默认开启）。
 
+### 🖥️ 命令行直接使用 dsh
+- 安装完成（或版本切换）后，会自动生成 `dsh.cmd` 启动器并写入**用户 PATH**（`%APPDATA%\DeepSeek Harness\bin`）。
+- 之后在 **cmd / PowerShell / 终端**里直接输入 `dsh` 即可使用官方 CLI（如 `dsh --version`、`dsh web`），无需手动装环境。
+- 提示：PATH 变更通过系统环境广播生效，新开的终端立即可用；已打开的终端重启一下即可。
+- 若不再需要，可在「系统环境变量 → Path」中删除 `%APPDATA%\DeepSeek Harness\bin`。
+
 ---
 
 ## 使用方法
