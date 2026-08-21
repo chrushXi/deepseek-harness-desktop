@@ -862,7 +862,12 @@ async function installManagedDsh(
     fs.rmSync(staging, { recursive: true, force: true });
     fs.mkdirSync(staging, { recursive: true });
     setStage("正在安装 DeepSeek Harness…", 0);
-    sendBootLog(win, `npm install --prefix "${staging}" ${spec} --registry=${registry || DEFAULT_REGISTRIES[0] || "https://registry.npmmirror.com"} --package-lock=false --prefer-offline`);
+
+    // 候选源：显式指定的 registry 优先，随后按 DEFAULT_REGISTRIES 顺序回退
+    // （npmmirror 镜像对 rc 版本可能存在同步滞后，装不上时自动尝试 npmjs）
+    const candidateRegistries = [...new Set(
+      [registry || null, ...DEFAULT_REGISTRIES].filter(Boolean)
+    )];
 
     creep = setInterval(() => {
       progress = Math.min(92, progress + 1);
@@ -875,34 +880,46 @@ async function installManagedDsh(
       }
     }, 1000);
 
-    const installArgs = [
-      ...npm.argsPrefix,
-      "install",
-      "--prefix", staging,
-      `--registry=${registry || DEFAULT_REGISTRIES[0] || "https://registry.npmmirror.com"}`,
-      "--loglevel=verbose",
-      "--no-audit",
-      "--no-fund",
-      "--package-lock=false",
-      "--prefer-offline",
-      spec,
-    ];
-    const result = await runLoggedCommand(npm.command, installArgs, {
-      cwd: app.getPath("userData"),
-      shell: !!npm.shell,
-      env: npm.env,
-      onChild: (child) => { activeInstallChild = child; },
-      onLine: (line) => {
-        lastActivityAt = Date.now();
-        if (stalled) {
-          stalled = false;
-          setStage("正在安装 DeepSeek Harness…", progress);
-        }
-        tail = (tail + line + "\n").slice(-6000);
-        sendBootLog(win, line);
-      },
-    });
-    activeInstallChild = null;
+    let result = null;
+    let installErrorTail = "";
+    for (const reg of candidateRegistries) {
+      if (cancelInstallRequested) break;
+      sendBootLog(win, `npm install --prefix "${staging}" ${spec} --registry=${reg} --package-lock=false --prefer-offline`);
+      const attemptArgs = [
+        ...npm.argsPrefix,
+        "install",
+        "--prefix", staging,
+        `--registry=${reg}`,
+        "--loglevel=verbose",
+        "--no-audit",
+        "--no-fund",
+        "--package-lock=false",
+        "--prefer-offline",
+        spec,
+      ];
+      result = await runLoggedCommand(npm.command, attemptArgs, {
+        cwd: app.getPath("userData"),
+        shell: !!npm.shell,
+        env: npm.env,
+        onChild: (child) => { activeInstallChild = child; },
+        onLine: (line) => {
+          lastActivityAt = Date.now();
+          if (stalled) {
+            stalled = false;
+            setStage("正在安装 DeepSeek Harness…", progress);
+          }
+          tail = (tail + line + "\n").slice(-6000);
+          sendBootLog(win, line);
+        },
+      });
+      activeInstallChild = null;
+      if (cancelInstallRequested) break;
+      if (result.code === 0) break;
+      installErrorTail = result.tail || "";
+      if (candidateRegistries.length > 1) {
+        sendBootLog(win, `从 ${reg} 安装失败（退出码 ${result.code}），正在尝试其他下载源…`);
+      }
+    }
 
     clearInterval(creep);
     clearInterval(stallTimer);
@@ -915,8 +932,8 @@ async function installManagedDsh(
       return false;
     }
 
-    if (result.code !== 0) {
-      sendBootLog(win, `DeepSeek Harness 安装失败（退出码 ${result.code}）${result.tail ? `：${result.tail.slice(-700)}` : ""}`);
+    if (!result || result.code !== 0) {
+      sendBootLog(win, `DeepSeek Harness 安装失败（退出码 ${result ? result.code : "unknown"}）${installErrorTail ? `：${installErrorTail.slice(-700)}` : ""}`);
       fs.rmSync(staging, { recursive: true, force: true });
       return false;
     }
@@ -1616,6 +1633,26 @@ async function listDshVersions() {
   return null;
 }
 
+/** 探测能提供指定版本 dsh 的 registry（镜像对 rc 版本可能存在同步滞后，装不上时按序回退）。 */
+async function resolveRegistryForVersion(version) {
+  for (const registry of DEFAULT_REGISTRIES) {
+    try {
+      const data = await fetchJson(
+        `${registry}/@deepseek-ai/dsh`,
+        8000,
+        "application/vnd.npm.install-v1+json"
+      );
+      if (data && data.versions && typeof data.versions === "object" && data.versions[version]) {
+        log(`resolve registry for ${version}: ${registry}`);
+        return registry;
+      }
+    } catch (err) {
+      log(`resolve registry ${registry} for ${version} failed: ${err.message}`);
+    }
+  }
+  return DEFAULT_REGISTRIES[0] || null;
+}
+
 /**
  * 静默检查更新（监控 Next 频道：取全部 dist-tags 与版本中 semver 最高者）。
  * 发现新版本时通过设置弹窗内的更新提示通知一次（notifiedVersion 持久化，每个版本只提示一次）。
@@ -1685,7 +1722,9 @@ async function installVersionWithSplash(win, version) {
     const previousMode = runtimeMode;
     setRuntimeMode("global");
     nativeRuntime = await probeNodeToolchain();
-    const installResult = await installManagedDsh(win, { version, keepBackup: true });
+    // 先探测哪个源有这个版本（npmmirror 可能滞后），安装失败时 installManagedDsh 还会继续回退其他源
+    const installRegistry = await resolveRegistryForVersion(version);
+    const installResult = await installManagedDsh(win, { version, registry: installRegistry, keepBackup: true });
     setRuntimeMode(previousMode);
     activeInstallChild = null;
 
