@@ -26,6 +26,7 @@ DeepSeekHarness的桌面版，兼容有或者没有Harness的用户，并且    
   <img width="171" height="43" alt="屏幕截图 2026-08-21 153801" src="https://github.com/user-attachments/assets/ce02c95e-0895-4626-a085-69a523a602dd" />
 
 - **右键余额** → 打开**余额详情面板**：可用余额 / 赠送余额 / 峰谷时段 / 打印小票。
+- 
     <img width="283" height="207" alt="屏幕截图 2026-08-20 214003" src="https://github.com/user-attachments/assets/7de3b1bb-f8d1-4bd4-8c69-c279c15d5e43" />
 
 
