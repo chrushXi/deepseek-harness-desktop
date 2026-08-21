@@ -13,7 +13,8 @@ DeepSeekHarness的桌面版，兼容有或者没有Harness的用户，并且    
 - 捆绑 Node 24 运行时与 dsh 完整依赖树（约 300MB），打包后断网也可启动（登录/会话数据仍在 `~/.dsh`）。
 
 ### 🔄 直接更新 Harness（一键 / 按版本）
-- ![屏幕截图 2026-08-21 152656](C:\Users\fengq\Pictures\Screenshots\屏幕截图 2026-08-21 152656.png)
+<img width="662" height="509" alt="屏幕截图 2026-08-21 152656" src="https://github.com/user-attachments/assets/0b08fb6c-1ad1-4fc1-9dfc-b137979192c7" />
+
 
 ### 💰 余额监控 + 峰谷计费
 
@@ -21,14 +22,16 @@ DeepSeekHarness的桌面版，兼容有或者没有Harness的用户，并且    
 
 - 标题栏右侧常驻显示 **DeepSeek 账户余额**（可用余额 = 官方余额 − 本地待扣费），扣费时有金额变动动画。
 - 缓存未命中产生暴击，命中缓存正常扣费
-- ![屏幕截图 2026-08-21 152937](C:\Users\fengq\Pictures\Screenshots\屏幕截图 2026-08-21 152937.png)![1787297970670](C:\Users\fengq\AppData\Roaming\Typora\typora-user-images\1787297970670.png)
+  <img width="171" height="43" alt="屏幕截图 2026-08-21 153801" src="https://github.com/user-attachments/assets/957737cd-d848-4826-91ff-e84b33d4c361" />
+
 - **右键余额** → 打开**余额详情面板**：可用余额 / 赠送余额 / 峰谷时段 / 打印小票。
-- ![屏幕截图 2026-08-20 214003](C:\Users\fengq\Pictures\Screenshots\屏幕截图 2026-08-20 214003.png)
+  <img width="283" height="207" alt="屏幕截图 2026-08-20 214003" src="https://github.com/user-attachments/assets/7de3b1bb-f8d1-4bd4-8c69-c279c15d5e43" />
+
 
 ### 🧾 会话小票
 - 余额详情面板 → 「**打印小票**」（白色浮起按钮），生成当前会话的**超市小票风格清单**：按模型汇总调用次数、输入/输出/缓存 Token、金额、耗时、缓存命中率、峰谷费用。
+  <img width="1414" height="878" alt="屏幕截图 2026-08-21 153333" src="https://github.com/user-attachments/assets/8035501e-724d-4de3-9dae-275531300955" />
 
-  ![1787297617280](C:\Users\fengq\AppData\Roaming\Typora\typora-user-images\1787297617280.png)
 - 可在「软件设置 → 通用 → **会话小票**」中关闭该入口（默认开启）。
 
 ---
@@ -132,5 +135,7 @@ npm run dist
 若 `~/.dsh/profiles/node_modules` 中的条目被外部工具（如手动复制、其他安装）改成了普通文件夹，
 DSH 会拒绝启动并提示 "exists and is not a symlink"。本应用检测到该错误时会弹窗提供**一键自动修复**
 （仅删除 `$DSH_HOME/profiles/node_modules` 内的异常条目，该目录由 DSH 自动维护，可安全重建），修复后自动重启服务器。
+<img width="1437" height="900" alt="屏幕截图 2026-08-20 211007" src="https://github.com/user-attachments/assets/6c35adaf-34e9-473c-afa5-dcc6482b1710" />
+<img width="1442" height="901" alt="屏幕截图 2026-08-20 213912" src="https://github.com/user-attachments/assets/b4a7b3a5-f1b5-45bc-8213-ba0272a2033a" />
+<img width="1438" height="898" alt="屏幕截图 2026-08-20 213919" src="https://github.com/user-attachments/assets/9d36bc7a-7775-45b9-8367-2ebc7bc31e90" />
 
-![屏幕截图 2026-08-20 213912](C:\Users\fengq\Pictures\Screenshots\屏幕截图 2026-08-20 213912.png)![屏幕截图 2026-08-20 213919](C:\Users\fengq\Pictures\Screenshots\屏幕截图 2026-08-20 213919.png)![屏幕截图 2026-08-20 211007](C:\Users\fengq\Pictures\Screenshots\屏幕截图 2026-08-20 211007.png)
